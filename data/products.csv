@@ -1,0 +1,31 @@
+product_id,product_name,category,price,reorder_level
+P001,Milk 1L,Dairy,60.0,50
+P002,Bread,Bakery,40.0,20
+P003,Eggs 12pk,Dairy,90.0,30
+P004,Rice 5kg,Grocery,350.0,15
+P005,Sugar 1kg,Grocery,45.0,25
+P006,Coffee 200g,Beverages,180.0,20
+P007,Tea 250g,Beverages,120.0,25
+P008,Biscuits Pack,Snacks,30.0,40
+P009,Chips,Snacks,20.0,50
+P010,Soft Drink 750ml,Beverages,40.0,30
+P011,Juice 1L,Beverages,85.0,20
+P012,Shampoo 180ml,Personal Care,220.0,15
+P013,Soap 100g,Personal Care,35.0,40
+P014,Toothpaste 150g,Personal Care,85.0,25
+P015,Detergent 1kg,Household,150.0,20
+P016,Dishwash Liquid 500ml,Household,110.0,15
+P017,Notebook,Stationery,65.0,30
+P018,Pen 5pk,Stationery,15.0,50
+P019,Butter 500g,Dairy,275.0,20
+P020,Paneer 200g,Dairy,120.0,15
+P021,Wheat Flour 5kg,Grocery,260.0,20
+P022,Cooking Oil 1L,Grocery,175.0,25
+P023,Turmeric Powder 200g,Grocery,60.0,15
+P024,Salt 1kg,Grocery,25.0,30
+P025,Instant Noodles,Snacks,28.0,40
+P026,Chocolate Bar,Snacks,50.0,30
+P027,Hand Wash 250ml,Personal Care,95.0,20
+P028,Surface Cleaner 500ml,Household,130.0,15
+P029,Eraser Pack,Stationery,20.0,30
+P030,Marker Pen,Stationery,40.0,25

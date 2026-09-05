@@ -9,6 +9,18 @@ StockSense AI is an intelligent retail sales and inventory copilot built for sto
 ## Problem Statement
 Retail store managers face constant challenges managing stock levels, predicting demand, avoiding costly stock-outs, and identifying slow-moving inventory. Traditional tools are complex or lack grounded explanations. StockSense AI provides clear, data-backed recommendations and natural language interaction while relying strictly on deterministic business logic for calculations.
 
+## Sample Dataset
+StockSense AI includes a locally generated synthetic retail dataset for demonstration and evaluation.
+
+Dataset contains:
+- 3 fictional retail stores (Central Store Chennai, City Store Coimbatore, Market Store Madurai)
+- 30 products across multiple categories (Dairy, Bakery, Beverages, Grocery, Snacks, Personal Care, Household, Stationery)
+- Current inventory snapshots across all 90 store-product pairs
+- Approximately 60 days of historical sales records (~6,000 transactions) ending 2026-09-05
+- Deliberately generated demand patterns for testing analytics (high stock-out risk for Milk 1L, overstock for Bread, sales drop for Shampoo, sales spike for Coffee, non-moving inventory for Notebook, zero-stock and zero-recent-sales edge cases)
+
+The dataset is synthetic and generated locally for hackathon demonstration purposes.
+
 ## Planned Features
 - **Deterministic Analytics Engine**: Exact calculations for sales performance, stock levels, stock-out risk, overstocking, and slow-moving items.
 - **Anomaly Detection Engine**: Automatic identification of unusual sales spikes and drops.
@@ -45,6 +57,7 @@ StockSense-AI/
 │   ├── query_router.py
 │   └── gemini_service.py
 ├── data/
+│   ├── generate_dataset.py
 │   ├── products.csv
 │   ├── stores.csv
 │   ├── inventory.csv
@@ -67,6 +80,10 @@ StockSense-AI/
    ```bash
    pip install -r requirements.txt
    ```
+4. Generate the sample dataset:
+   ```bash
+   python data/generate_dataset.py
+   ```
 
 ## Run Instructions
 Start the application by executing:
@@ -85,7 +102,7 @@ VALIDATION_KEY=your_validation_key_here
 
 ## Current Development Status
 - **Phase 0 (Completed)**: Project skeleton, directory structure, placeholder backend modules, empty database and data files, dark Streamlit starter theme, and entry point.
-- **Phase 1 (Upcoming)**: Database schema creation and sample dataset generation.
+- **Phase 1 (Completed)**: SQLite database schema implementation, local synthetic retail dataset generation, deliberate pattern engineering, CSV exports, and live database connection in Streamlit dashboard.
 
 ## Validation Key
 The official hackathon validation key must be added to `.env` as `VALIDATION_KEY` before final submission. Do not invent or hardcode a validation key.
