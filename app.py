@@ -14,19 +14,117 @@ from backend.database import (
     get_categories,
     get_dashboard_kpis,
     get_database_counts,
-    get_inventory_intelligence,
     get_revenue_trend,
     get_stores_list,
     get_top_products_by_revenue,
 )
+from backend.inventory_engine import get_inventory_report
 
 # Load environment variables without failing if GEMINI_API_KEY is missing
 load_dotenv()
 
 
+def generate_priority_alerts(report_df, limit=8):
+    """Generates a prioritized list of evidence-backed alert dicts from inventory report."""
+    if report_df.empty:
+        return []
+
+    alerts = []
+
+    for _, r in report_df.iterrows():
+        product_name = r["product"]
+        store_name = r["store"]
+        stock = r["current_stock"]
+        days_rem = r["days_remaining"]
+        risk = r["stockout_risk"]
+        overstock = r["overstock_flag"]
+        movement = r["movement_status"]
+
+        alert_type = None
+        priority = 99
+        message = ""
+        badge_color = "#94A3B8"
+
+        # Determine single highest-priority alert for this inventory position
+        if risk == "OUT_OF_STOCK":
+            priority = 1
+            badge_color = "#EF4444"
+            message = f"🔴 <strong>{product_name}</strong> — {store_name} — currently out of stock"
+            alert_type = "OUT_OF_STOCK"
+        elif risk == "CRITICAL":
+            priority = 2
+            badge_color = "#EF4444"
+            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+            message = f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>"
+            alert_type = "CRITICAL"
+        elif risk == "HIGH":
+            priority = 3
+            badge_color = "#F59E0B"
+            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+            message = f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>"
+            alert_type = "HIGH"
+        elif overstock == "OVERSTOCK_RISK":
+            priority = 4
+            badge_color = "#F59E0B"
+            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+            message = f"🟠 <strong>{product_name}</strong> — {store_name} — approximately <strong>{days_str} days</strong> of stock remaining"
+            alert_type = "OVERSTOCK"
+        elif movement == "NON_MOVING":
+            priority = 5
+            badge_color = "#EAB308"
+            message = f"🟡 <strong>{product_name}</strong> — {store_name} — no sales recorded in the last 14 days"
+            alert_type = "NON_MOVING"
+        elif movement == "SLOW_MOVING":
+            priority = 6
+            badge_color = "#EAB308"
+            message = f"🟡 <strong>{product_name}</strong> — {store_name} — recent sales fell below 30% of the previous week's rate"
+            alert_type = "SLOW_MOVING"
+
+        if alert_type:
+            alerts.append(
+                {
+                    "priority": priority,
+                    "message": message,
+                    "badge_color": badge_color,
+                    "product": product_name,
+                    "store": store_name,
+                }
+            )
+
+    # Sort alerts by priority score ascending
+    alerts.sort(key=lambda x: x["priority"])
+    return alerts[:limit]
+
+
 def render_dashboard_page(db_metrics):
     kpis = get_dashboard_kpis()
     latest_date = kpis["latest_date"]
+
+    # Fetch inventory report to derive inventory metrics and alerts
+    inventory_df = get_inventory_report()
+
+    if not inventory_df.empty:
+        stockout_risk_count = len(
+            inventory_df[
+                inventory_df["stockout_risk"].isin(
+                    ["OUT_OF_STOCK", "CRITICAL", "HIGH"]
+                )
+            ]
+        )
+        overstock_count = len(
+            inventory_df[inventory_df["overstock_flag"] == "OVERSTOCK_RISK"]
+        )
+        slow_moving_count = len(
+            inventory_df[
+                inventory_df["movement_status"].isin(
+                    ["SLOW_MOVING", "NON_MOVING"]
+                )
+            ]
+        )
+    else:
+        stockout_risk_count = 0
+        overstock_count = 0
+        slow_moving_count = 0
 
     st.markdown(
         f"""
@@ -46,13 +144,12 @@ def render_dashboard_page(db_metrics):
         unsafe_allow_html=True,
     )
 
-    # 6 KPI Cards in 2 rows of 3 columns
+    # 6 Real KPI Cards in 2 rows of 3 columns
     r1_c1, r1_c2, r1_c3 = st.columns(3)
     r2_c1, r2_c2, r2_c3 = st.columns(3)
 
-    formatted_rev = f"₹{kpis['todays_revenue']:,.2f}" if kpis["latest_date"] else "—"
-    formatted_units = f"{kpis['todays_units']:,}" if kpis["latest_date"] else "—"
-    formatted_risk = f"{kpis['low_stock_count']}" if kpis["latest_date"] else "—"
+    formatted_rev = f"₹{kpis['todays_revenue']:,.2f}" if latest_date else "—"
+    formatted_units = f"{kpis['todays_units']:,}" if latest_date else "—"
 
     with r1_c1:
         st.markdown(
@@ -83,8 +180,8 @@ def render_dashboard_page(db_metrics):
             f"""
             <div class="kpi-card risk-accent">
                 <div class="kpi-label">Products at Stock-out Risk</div>
-                <div class="kpi-value">{formatted_risk}</div>
-                <div class="kpi-subtitle">Temporary: below reorder level</div>
+                <div class="kpi-value">{stockout_risk_count}</div>
+                <div class="kpi-subtitle">Out of stock / Critical / High</div>
             </div>
         """,
             unsafe_allow_html=True,
@@ -92,11 +189,11 @@ def render_dashboard_page(db_metrics):
 
     with r2_c1:
         st.markdown(
-            """
+            f"""
             <div class="kpi-card amber-accent">
                 <div class="kpi-label">Overstocked Products</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Phase 3 detection</div>
+                <div class="kpi-value">{overstock_count}</div>
+                <div class="kpi-subtitle">Above 30 days supply</div>
             </div>
         """,
             unsafe_allow_html=True,
@@ -104,11 +201,11 @@ def render_dashboard_page(db_metrics):
 
     with r2_c2:
         st.markdown(
-            """
+            f"""
             <div class="kpi-card amber-accent">
                 <div class="kpi-label">Slow-moving Products</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Phase 3 detection</div>
+                <div class="kpi-value">{slow_moving_count}</div>
+                <div class="kpi-subtitle">Low or zero recent velocity</div>
             </div>
         """,
             unsafe_allow_html=True,
@@ -120,13 +217,43 @@ def render_dashboard_page(db_metrics):
             <div class="kpi-card amber-accent">
                 <div class="kpi-label">Sales Anomalies</div>
                 <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Phase 3 detection</div>
+                <div class="kpi-subtitle">Phase 4 detection</div>
             </div>
         """,
             unsafe_allow_html=True,
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # Today's Priority Alerts Section
+    st.subheader("Today's Priority Alerts")
+    priority_alerts = generate_priority_alerts(inventory_df, limit=8)
+
+    if priority_alerts:
+        alert_html_items = ""
+        for alert in priority_alerts:
+            alert_html_items += f"""
+            <div style="background-color: #111827; border: 1px solid #1F2937; border-left: 4px solid {alert['badge_color']}; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; font-size: 0.95rem; color: #F8FAFC;">
+                {alert['message']}
+            </div>
+            """
+        st.markdown(
+            f"""
+            <div style="margin-bottom: 24px;">
+                {alert_html_items}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="empty-state" style="margin-bottom: 24px;">
+                🟢 All inventory levels are healthy. No priority alerts detected today.
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
 
     # Charts Row: Revenue Trend (Left) & Top Products (Right)
     col_left, col_right = st.columns([3, 2])
@@ -203,12 +330,12 @@ def render_inventory_intelligence_page():
         unsafe_allow_html=True,
     )
 
-    inv_records = get_inventory_intelligence(days=7)
-    if not inv_records:
-        st.warning("No inventory records match the query.")
+    inventory_df = get_inventory_report()
+    if inventory_df.empty:
+        st.warning("No inventory records available.")
         return
 
-    df = pd.DataFrame(inv_records)
+    df = inventory_df.copy()
 
     # Filter controls
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -242,7 +369,7 @@ def render_inventory_intelligence_page():
 
     if search_term and search_term.strip():
         df = df[
-            df["product_name"].str.contains(search_term.strip(), case=False, na=False)
+            df["product"].str.contains(search_term.strip(), case=False, na=False)
         ]
 
     if df.empty:
@@ -252,29 +379,34 @@ def render_inventory_intelligence_page():
     # Process display table columns
     display_rows = []
     for _, row in df.iterrows():
-        recent_units = int(row["recent_7d_units"])
-        avg_daily = float(row["avg_daily_sales"])
-        current_stock = int(row["current_stock"])
+        avg_daily = row["avg_daily_sales"]
+        days_rem = row["days_remaining"]
+        stock = int(row["current_stock"])
 
-        if recent_units > 0 and avg_daily > 0:
+        if pd.notna(avg_daily) and avg_daily is not None:
             avg_daily_str = f"{avg_daily:.2f}"
-            days_rem_val = current_stock / avg_daily
-            days_rem_str = f"{days_rem_val:.1f}"
         else:
             avg_daily_str = "N/A"
+
+        if stock == 0:
+            days_rem_str = "0.0"
+        elif pd.notna(days_rem) and days_rem is not None:
+            days_rem_str = f"{days_rem:.1f}"
+        else:
             days_rem_str = "N/A"
 
         display_rows.append(
             {
-                "Product": row["product_name"],
+                "Product": row["product"],
                 "Category": row["category"],
-                "Store": f"{row['store_name']} ({row['location']})",
-                "Current Stock": current_stock,
-                "7-Day Units": recent_units,
+                "Store": row["store"],
+                "Current Stock": stock,
                 "Average Daily Sales": avg_daily_str,
                 "Days Remaining": days_rem_str,
-                "Risk": "TBD",
-                "Recommended Action": "TBD",
+                "Risk": row["stockout_risk"],
+                "Overstock": row["overstock_flag"],
+                "Movement": row["movement_status"],
+                "Recommended Action": row["recommended_action"],
             }
         )
 
@@ -294,10 +426,11 @@ def render_inventory_intelligence_page():
             "Category": st.column_config.TextColumn("Category", width="small"),
             "Store": st.column_config.TextColumn("Store", width="medium"),
             "Current Stock": st.column_config.NumberColumn("Current Stock", format="%d"),
-            "7-Day Units": st.column_config.NumberColumn("7-Day Units", format="%d"),
             "Average Daily Sales": st.column_config.TextColumn("Average Daily Sales"),
             "Days Remaining": st.column_config.TextColumn("Days Remaining"),
             "Risk": st.column_config.TextColumn("Risk"),
+            "Overstock": st.column_config.TextColumn("Overstock"),
+            "Movement": st.column_config.TextColumn("Movement"),
             "Recommended Action": st.column_config.TextColumn("Recommended Action"),
         },
     )
@@ -308,10 +441,10 @@ def render_sales_analytics_stub():
         """
         <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">Sales Analytics</h1>
         <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
-            Detailed sales trends and product performance are coming in Phase 3.
+            Detailed sales trends and product performance are coming in Phase 4.
         </p>
         <div class="empty-state">
-            📊 Sales Analytics features (store breakdown, category trends, peak hours) will be unlocked in Phase 3.
+            📊 Sales Analytics features (store breakdown, category trends, peak hours) will be unlocked in Phase 4.
         </div>
     """,
         unsafe_allow_html=True,

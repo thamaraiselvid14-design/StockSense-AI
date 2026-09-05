@@ -27,18 +27,22 @@ The dataset is synthetic and generated locally for hackathon demonstration purpo
 - **SQLite Retail Database**: Normalized 4-table schema (`Products`, `Stores`, `Inventory`, `Sales`) with strict validation constraints.
 - **Deterministic Synthetic Dataset Generator**: 60 days of historical sales data with engineered retail patterns.
 - **Multi-Page Application Shell**: Permanent 5-section navigation (`Dashboard`, `Inventory Intelligence`, `Sales Analytics`, `AI Copilot`, `Product Details`).
-- **Live Dashboard Metrics**: Real-time KPI cards for Today's Revenue (INR), Today's Units Sold, and Stock-out Risk count for the latest sales date (`2026-09-05`).
-- **30-Day Revenue Visualization**: Responsive Plotly line chart rendering daily revenue trend from SQLite.
-- **Top Product Visualization**: Plotly horizontal bar chart highlighting top 10 products by revenue.
-- **Inventory Intelligence Page**: Complete inventory table with store, category, and product search filters, 7-day average daily sales, and days remaining calculations.
-- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions.
+- **Live Dashboard Metrics**: Real-time KPI cards for Today's Revenue (INR), Today's Units Sold, Stock-out Risk, Overstocked Products, and Slow-moving Products for latest sales date (`2026-09-05`).
+- **Today's Priority Alerts**: Evidence-backed prioritized dashboard alerts highlighting out-of-stock, critical stock-out risk, overstock, and non-moving inventory.
+- **Deterministic Inventory Intelligence Engine (`backend/inventory_engine.py`)**:
+  - Average Daily Sales calculation over rolling 7-day window (returns `None` when recent units = 0)
+  - Days Remaining calculation (`current_stock / avg_daily_sales`; returns `0` for stock = 0)
+  - Stock-out Risk Classification (`OUT_OF_STOCK`, `CRITICAL`, `HIGH`, `MEDIUM`, `SAFE`, `UNKNOWN`)
+  - Overstock Detection (`OVERSTOCK_RISK` when days remaining > 30)
+  - Slow-moving and Non-moving Detection (`NON_MOVING` for 14d zero sales, `SLOW_MOVING` for <30% prior week velocity)
+  - Evidence-backed Action Mapping (`Replenish immediately`, `Reorder soon`, `Reduce next order / consider promotion`, `Investigate demand / consider promotion`, `Monitor stock closely`, `No action needed`, `Review demand history`)
+- **Interactive Inventory Table**: Complete 90-position table with Store, Category, and Product search filters and `"N/A"` display formatting.
+- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions and `backend/inventory_engine.py`.
 
 ### Upcoming
-- Advanced stock-out risk classification (days-remaining algorithms)
-- Overstock detection engine
-- Slow-moving and non-moving inventory detection engine
-- Sales anomaly detection engine (spikes and drops)
-- Evidence-based recommendation engine
+- Sales anomaly detection engine (sales spikes and sales drops)
+- Detailed product performance and store breakdown analytics
+- Evidence-based recommendation engine (`recommendation_engine.py`)
 - Gemini AI Copilot natural language query router and grounded explanations
 
 ## Technology Stack
@@ -63,8 +67,8 @@ StockSense-AI/
 ├── backend/
 │   ├── __init__.py
 │   ├── database.py
-│   ├── sales_engine.py
 │   ├── inventory_engine.py
+│   ├── sales_engine.py
 │   ├── anomaly_engine.py
 │   ├── recommendation_engine.py
 │   ├── query_router.py

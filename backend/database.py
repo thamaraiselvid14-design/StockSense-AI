@@ -131,7 +131,7 @@ def execute_many(query, seq_of_params=()):
 
 
 # -----------------------------------------------------------------------------
-# SEMANTIC DATABASE QUERY FUNCTIONS FOR PHASE 2 (NO RAW SQL IN UI)
+# SEMANTIC DATABASE QUERY FUNCTIONS FOR PHASE 2 & 3 (NO RAW SQL IN UI/ENGINE)
 # -----------------------------------------------------------------------------
 
 
@@ -202,7 +202,6 @@ def get_dashboard_kpis():
         (latest_date,),
     )
 
-    # Temporary Phase 2 stock-out risk: count of inventory positions where current_stock < reorder_level
     risk_row = fetch_one(
         """
         SELECT COUNT(*)
@@ -340,6 +339,112 @@ def get_inventory_intelligence(days=7):
         )
 
     return result
+
+
+def get_inventory_with_windowed_sales(recent_days=7, prior_days=7):
+    """Returns all inventory positions with sales totals for recent_days and prior_days windows."""
+    latest_date = get_latest_sales_date()
+    if not latest_date:
+        return []
+
+    ref_date = datetime.strptime(latest_date, "%Y-%m-%d")
+
+    rec_start = (ref_date - timedelta(days=recent_days - 1)).strftime("%Y-%m-%d")
+    rec_end = latest_date
+
+    prior_end = (ref_date - timedelta(days=recent_days)).strftime("%Y-%m-%d")
+    prior_start = (ref_date - timedelta(days=recent_days + prior_days - 1)).strftime("%Y-%m-%d")
+
+    rows = fetch_all(
+        """
+        SELECT 
+            p.product_id,
+            p.product_name,
+            p.category,
+            p.price,
+            p.reorder_level,
+            s.store_id,
+            s.store_name,
+            s.location,
+            i.current_stock,
+            i.last_updated,
+            COALESCE(r.recent_units, 0) as recent_units,
+            COALESCE(pr.prior_units, 0) as prior_units
+        FROM Inventory i
+        JOIN Products p ON i.product_id = p.product_id
+        JOIN Stores s ON i.store_id = s.store_id
+        LEFT JOIN (
+            SELECT store_id, product_id, SUM(quantity) as recent_units
+            FROM Sales
+            WHERE date >= ? AND date <= ?
+            GROUP BY store_id, product_id
+        ) r ON i.store_id = r.store_id AND i.product_id = r.product_id
+        LEFT JOIN (
+            SELECT store_id, product_id, SUM(quantity) as prior_units
+            FROM Sales
+            WHERE date >= ? AND date <= ?
+            GROUP BY store_id, product_id
+        ) pr ON i.store_id = pr.store_id AND i.product_id = pr.product_id
+        ORDER BY s.store_id ASC, p.product_id ASC
+        """,
+        (rec_start, rec_end, prior_start, prior_end),
+    )
+
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "product_id": row["product_id"],
+                "product_name": row["product_name"],
+                "category": row["category"],
+                "price": float(row["price"]),
+                "reorder_level": int(row["reorder_level"]),
+                "store_id": row["store_id"],
+                "store_name": row["store_name"],
+                "location": row["location"],
+                "current_stock": int(row["current_stock"]),
+                "last_updated": row["last_updated"],
+                "recent_7_units": int(row["recent_units"]),
+                "prior_7_units": int(row["prior_units"]),
+                "last_14_units": int(row["recent_units"]) + int(row["prior_units"]),
+            }
+        )
+
+    return result
+
+
+def get_product_sales_total(product_id, store_id=None, start_date=None, end_date=None):
+    """Returns total quantity sold for a product (and optional store) within a date range."""
+    query = "SELECT COALESCE(SUM(quantity), 0) FROM Sales WHERE product_id = ?"
+    params = [product_id]
+    if store_id:
+        query += " AND store_id = ?"
+        params.append(store_id)
+    if start_date:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND date <= ?"
+        params.append(end_date)
+
+    row = fetch_one(query, tuple(params))
+    return int(row[0]) if row else 0
+
+
+def get_product_inventory(product_id, store_id=None):
+    """Returns current stock (sum if store_id is None) for a product."""
+    if store_id:
+        row = fetch_one(
+            "SELECT current_stock FROM Inventory WHERE product_id = ? AND store_id = ?",
+            (product_id, store_id),
+        )
+        return int(row[0]) if row else 0
+    else:
+        row = fetch_one(
+            "SELECT COALESCE(SUM(current_stock), 0) FROM Inventory WHERE product_id = ?",
+            (product_id,),
+        )
+        return int(row[0]) if row else 0
 
 
 def get_categories():
