@@ -1,6 +1,8 @@
 import os
 import sys
 from dotenv import load_dotenv
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # Ensure project root is in sys.path for module imports
@@ -8,54 +10,364 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from backend.database import (
+    get_categories,
+    get_dashboard_kpis,
+    get_database_counts,
+    get_inventory_intelligence,
+    get_revenue_trend,
+    get_stores_list,
+    get_top_products_by_revenue,
+)
+
 # Load environment variables without failing if GEMINI_API_KEY is missing
 load_dotenv()
 
 
-def get_db_metrics():
-    """Queries retail.db via backend.database to fetch live table counts and connection status."""
-    try:
-        from backend.database import fetch_one
+def render_dashboard_page(db_metrics):
+    kpis = get_dashboard_kpis()
+    latest_date = kpis["latest_date"]
 
-        prod_row = fetch_one("SELECT COUNT(*) FROM Products")
-        store_row = fetch_one("SELECT COUNT(*) FROM Stores")
-        inv_row = fetch_one("SELECT COUNT(*) FROM Inventory")
-        sales_row = fetch_one("SELECT COUNT(*) FROM Sales")
+    st.markdown(
+        f"""
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center;">
+                <h1 style="margin: 0; font-size: 2.25rem; font-weight: 800; color: #F8FAFC;">StockSense AI</h1>
+                <span class="phase-badge">Retail Management Dashboard</span>
+            </div>
+            <div style="background-color: #1E293B; color: #38BDF8; padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; border: 1px solid #334155;">
+                📅 Last data date: <strong>{latest_date or 'N/A'}</strong>
+            </div>
+        </div>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Here's what needs attention today
+        </p>
+    """,
+        unsafe_allow_html=True,
+    )
 
-        if (
-            prod_row is not None
-            and store_row is not None
-            and inv_row is not None
-            and sales_row is not None
-        ):
-            return {
-                "connected": True,
-                "products": prod_row[0],
-                "stores": store_row[0],
-                "inventory": inv_row[0],
-                "sales": sales_row[0],
-            }
-    except Exception as e:
-        return {
-            "connected": False,
-            "error": str(e),
-            "products": 0,
-            "stores": 0,
-            "inventory": 0,
-            "sales": 0,
-        }
+    # 6 KPI Cards in 2 rows of 3 columns
+    r1_c1, r1_c2, r1_c3 = st.columns(3)
+    r2_c1, r2_c2, r2_c3 = st.columns(3)
 
-    return {
-        "connected": False,
-        "error": "Database not initialized",
-        "products": 0,
-        "stores": 0,
-        "inventory": 0,
-        "sales": 0,
+    formatted_rev = f"₹{kpis['todays_revenue']:,.2f}" if kpis["latest_date"] else "—"
+    formatted_units = f"{kpis['todays_units']:,}" if kpis["latest_date"] else "—"
+    formatted_risk = f"{kpis['low_stock_count']}" if kpis["latest_date"] else "—"
+
+    with r1_c1:
+        st.markdown(
+            f"""
+            <div class="kpi-card blue-accent">
+                <div class="kpi-label">Today's Revenue</div>
+                <div class="kpi-value">{formatted_rev}</div>
+                <div class="kpi-subtitle">For {latest_date or 'latest date'}</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with r1_c2:
+        st.markdown(
+            f"""
+            <div class="kpi-card blue-accent">
+                <div class="kpi-label">Today's Units Sold</div>
+                <div class="kpi-value">{formatted_units}</div>
+                <div class="kpi-subtitle">For {latest_date or 'latest date'}</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with r1_c3:
+        st.markdown(
+            f"""
+            <div class="kpi-card risk-accent">
+                <div class="kpi-label">Products at Stock-out Risk</div>
+                <div class="kpi-value">{formatted_risk}</div>
+                <div class="kpi-subtitle">Temporary: below reorder level</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with r2_c1:
+        st.markdown(
+            """
+            <div class="kpi-card amber-accent">
+                <div class="kpi-label">Overstocked Products</div>
+                <div class="kpi-value">—</div>
+                <div class="kpi-subtitle">Phase 3 detection</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with r2_c2:
+        st.markdown(
+            """
+            <div class="kpi-card amber-accent">
+                <div class="kpi-label">Slow-moving Products</div>
+                <div class="kpi-value">—</div>
+                <div class="kpi-subtitle">Phase 3 detection</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    with r2_c3:
+        st.markdown(
+            """
+            <div class="kpi-card amber-accent">
+                <div class="kpi-label">Sales Anomalies</div>
+                <div class="kpi-value">—</div>
+                <div class="kpi-subtitle">Phase 3 detection</div>
+            </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Charts Row: Revenue Trend (Left) & Top Products (Right)
+    col_left, col_right = st.columns([3, 2])
+
+    with col_left:
+        st.subheader("Revenue Trend — Last 30 Days")
+        trend_data = get_revenue_trend(days=30)
+        if trend_data:
+            df_trend = pd.DataFrame(trend_data)
+            fig_trend = px.line(
+                df_trend,
+                x="date",
+                y="revenue",
+                labels={"date": "Date", "revenue": "Revenue (₹)"},
+                title=None,
+            )
+            fig_trend.update_traces(
+                line=dict(color="#38BDF8", width=3),
+                hovertemplate="<b>Date:</b> %{x}<br><b>Revenue:</b> ₹%{y:,.2f}<extra></extra>",
+            )
+            fig_trend.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#F8FAFC"),
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=340,
+                xaxis=dict(showgrid=False, color="#94A3B8"),
+                yaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("No revenue trend data available.")
+
+    with col_right:
+        st.subheader("Top Products by Revenue (Last 30 Days)")
+        top_products = get_top_products_by_revenue(days=30, limit=10)
+        if top_products:
+            df_top = pd.DataFrame(top_products)
+            df_top_sorted = df_top.sort_values(by="total_revenue", ascending=True)
+            fig_top = px.bar(
+                df_top_sorted,
+                x="total_revenue",
+                y="product_name",
+                orientation="h",
+                labels={"total_revenue": "Revenue (₹)", "product_name": "Product"},
+                title=None,
+            )
+            fig_top.update_traces(
+                marker_color="#818CF8",
+                hovertemplate="<b>Product:</b> %{y}<br><b>Revenue:</b> ₹%{x:,.2f}<extra></extra>",
+            )
+            fig_top.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#F8FAFC"),
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=340,
+                xaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+                yaxis=dict(showgrid=False, color="#94A3B8"),
+            )
+            st.plotly_chart(fig_top, use_container_width=True)
+        else:
+            st.info("No top product data available.")
+
+
+def render_inventory_intelligence_page():
+    st.markdown(
+        """
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 4px;">Inventory Intelligence</h1>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Monitor stock levels and recent sales velocity across stores.
+        </p>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    inv_records = get_inventory_intelligence(days=7)
+    if not inv_records:
+        st.warning("No inventory records match the query.")
+        return
+
+    df = pd.DataFrame(inv_records)
+
+    # Filter controls
+    col_f1, col_f2, col_f3 = st.columns(3)
+
+    stores_data = get_stores_list()
+    store_options = ["All Stores"] + [
+        f"{s['store_name']} ({s['location']})" for s in stores_data
+    ]
+    store_map = {
+        f"{s['store_name']} ({s['location']})": s["store_id"] for s in stores_data
     }
 
+    categories = ["All Categories"] + get_categories()
 
-def render_dashboard():
+    with col_f1:
+        selected_store_name = st.selectbox("Store Filter", store_options, index=0)
+
+    with col_f2:
+        selected_category = st.selectbox("Category Filter", categories, index=0)
+
+    with col_f3:
+        search_term = st.text_input("Product Search", placeholder="Type product name...")
+
+    # Apply filters locally on DataFrame
+    if selected_store_name != "All Stores":
+        target_store_id = store_map[selected_store_name]
+        df = df[df["store_id"] == target_store_id]
+
+    if selected_category != "All Categories":
+        df = df[df["category"] == selected_category]
+
+    if search_term and search_term.strip():
+        df = df[
+            df["product_name"].str.contains(search_term.strip(), case=False, na=False)
+        ]
+
+    if df.empty:
+        st.info("No inventory records match the selected filters.")
+        return
+
+    # Process display table columns
+    display_rows = []
+    for _, row in df.iterrows():
+        recent_units = int(row["recent_7d_units"])
+        avg_daily = float(row["avg_daily_sales"])
+        current_stock = int(row["current_stock"])
+
+        if recent_units > 0 and avg_daily > 0:
+            avg_daily_str = f"{avg_daily:.2f}"
+            days_rem_val = current_stock / avg_daily
+            days_rem_str = f"{days_rem_val:.1f}"
+        else:
+            avg_daily_str = "N/A"
+            days_rem_str = "N/A"
+
+        display_rows.append(
+            {
+                "Product": row["product_name"],
+                "Category": row["category"],
+                "Store": f"{row['store_name']} ({row['location']})",
+                "Current Stock": current_stock,
+                "7-Day Units": recent_units,
+                "Average Daily Sales": avg_daily_str,
+                "Days Remaining": days_rem_str,
+                "Risk": "TBD",
+                "Recommended Action": "TBD",
+            }
+        )
+
+    df_display = pd.DataFrame(display_rows)
+
+    st.markdown(
+        f"<div style='margin-bottom: 12px; color: #94A3B8; font-size: 0.9rem;'>Showing <strong>{len(df_display)}</strong> inventory positions</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.dataframe(
+        df_display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Product": st.column_config.TextColumn("Product", width="medium"),
+            "Category": st.column_config.TextColumn("Category", width="small"),
+            "Store": st.column_config.TextColumn("Store", width="medium"),
+            "Current Stock": st.column_config.NumberColumn("Current Stock", format="%d"),
+            "7-Day Units": st.column_config.NumberColumn("7-Day Units", format="%d"),
+            "Average Daily Sales": st.column_config.TextColumn("Average Daily Sales"),
+            "Days Remaining": st.column_config.TextColumn("Days Remaining"),
+            "Risk": st.column_config.TextColumn("Risk"),
+            "Recommended Action": st.column_config.TextColumn("Recommended Action"),
+        },
+    )
+
+
+def render_sales_analytics_stub():
+    st.markdown(
+        """
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">Sales Analytics</h1>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Detailed sales trends and product performance are coming in Phase 3.
+        </p>
+        <div class="empty-state">
+            📊 Sales Analytics features (store breakdown, category trends, peak hours) will be unlocked in Phase 3.
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_ai_copilot_stub():
+    st.markdown(
+        """
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">AI Copilot</h1>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Ask questions about your sales and inventory data.
+        </p>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    st.text_input(
+        "Ask a question about your inventory or sales:",
+        placeholder="What products are running out?",
+        disabled=True,
+        key="copilot_input_stub",
+    )
+
+    st.markdown(
+        """
+        <div style="margin-top: 8px;">
+            <span style="color: #64748B; font-size: 0.85rem; margin-right: 8px;">Example questions:</span>
+            <span class="question-pill">What products are running out?</span>
+            <span class="question-pill">What is overstocked?</span>
+            <span class="question-pill">How did Milk perform this month?</span>
+        </div>
+        <div style="margin-top: 16px; color: #94A3B8; font-size: 0.9rem; font-style: italic;">
+            🤖 AI Copilot will be activated in a later phase.
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_product_details_stub():
+    st.markdown(
+        """
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">Product Details</h1>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Detailed product performance and inventory history.
+        </p>
+        <div class="empty-state">
+            📦 Product Details view (individual product velocity, reorder calculation, historical demand graph) coming soon.
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_app():
     st.set_page_config(
         page_title="StockSense AI - Retail Intelligence Copilot",
         page_icon="📦",
@@ -94,27 +406,39 @@ def render_dashboard():
         vertical-align: middle;
     }
     
-    /* KPI Placeholder Card */
+    /* KPI Card Styling */
     .kpi-card {
         background-color: #111827;
         border: 1px solid #1F2937;
         border-radius: 10px;
-        padding: 20px;
+        padding: 18px 20px;
         text-align: left;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         transition: border-color 0.2s;
+        margin-bottom: 12px;
     }
     .kpi-card:hover {
         border-color: #374151;
     }
+    .kpi-card.blue-accent {
+        border-left: 4px solid #38BDF8;
+    }
+    .kpi-card.risk-accent {
+        border-left: 4px solid #EF4444;
+    }
+    .kpi-card.amber-accent {
+        border-left: 4px solid #F59E0B;
+    }
     .kpi-label {
-        font-size: 0.875rem;
+        font-size: 0.825rem;
         color: #94A3B8;
         font-weight: 500;
-        margin-bottom: 8px;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
     }
     .kpi-value {
-        font-size: 1.875rem;
+        font-size: 1.75rem;
         font-weight: 700;
         color: #F8FAFC;
         margin-bottom: 4px;
@@ -129,25 +453,10 @@ def render_dashboard():
         background-color: #111827;
         border: 1px dashed #334155;
         border-radius: 10px;
-        padding: 32px;
+        padding: 36px;
         text-align: center;
         color: #94A3B8;
         font-size: 0.95rem;
-    }
-    
-    /* Chart Placeholder Box */
-    .chart-placeholder {
-        background-color: #111827;
-        border: 1px dashed #334155;
-        border-radius: 10px;
-        height: 220px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #94A3B8;
-        font-size: 0.9rem;
-        text-align: center;
-        padding: 20px;
     }
     
     /* Question Pill Badges */
@@ -166,7 +475,7 @@ def render_dashboard():
         unsafe_allow_html=True,
     )
 
-    db_metrics = get_db_metrics()
+    db_metrics = get_database_counts()
 
     # Sidebar Navigation & Branding
     with st.sidebar:
@@ -180,8 +489,15 @@ def render_dashboard():
 
         page = st.radio(
             "Navigation",
-            ["Dashboard", "AI Copilot", "Inventory", "Sales Analytics", "Alerts"],
+            [
+                "Dashboard",
+                "Inventory Intelligence",
+                "Sales Analytics",
+                "AI Copilot",
+                "Product Details",
+            ],
             index=0,
+            key="navigation_radio",
         )
 
         st.markdown("---")
@@ -215,165 +531,21 @@ def render_dashboard():
             )
 
     # Page Router
-    if page != "Dashboard":
-        st.header(page)
-        st.info("Coming in a later phase.")
-        return
-
-    # Main Header
-    st.markdown(
-        """
-        <div style="display: flex; align-items: center; margin-bottom: 8px;">
-            <h1 style="margin: 0; font-size: 2.25rem; font-weight: 800; color: #F8FAFC;">StockSense AI</h1>
-            <span class="phase-badge">Prototype foundation</span>
-        </div>
-        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 16px;">
-            Here's what needs attention today
-        </p>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    # Live Database Overview Bar
-    if db_metrics["connected"]:
-        st.markdown(
-            f"""
-            <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 12px 16px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                <div style="display: flex; gap: 20px; font-size: 0.9rem; color: #94A3B8; flex-wrap: wrap;">
-                    <span><strong style="color: #F8FAFC;">{db_metrics['products']}</strong> Products</span>
-                    <span><strong style="color: #F8FAFC;">{db_metrics['stores']}</strong> Stores</span>
-                    <span><strong style="color: #F8FAFC;">{db_metrics['inventory']}</strong> Inventory Records</span>
-                    <span><strong style="color: #F8FAFC;">{db_metrics['sales']:,}</strong> Sales Records</span>
-                </div>
-                <span style="color: #10B981; font-size: 0.85rem; font-weight: 600;">SQLite database connected</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.warning("SQLite database unavailable. Run dataset generator to initialize.")
-
-    # KPI Placeholder Cards
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.markdown(
-            """
-            <div class="kpi-card">
-                <div class="kpi-label">Today's Revenue</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Data not loaded</div>
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    with col2:
-        st.markdown(
-            """
-            <div class="kpi-card">
-                <div class="kpi-label">Units Sold</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Data not loaded</div>
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    with col3:
-        st.markdown(
-            """
-            <div class="kpi-card">
-                <div class="kpi-label">Low Stock Products</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Data not loaded</div>
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    with col4:
-        st.markdown(
-            """
-            <div class="kpi-card">
-                <div class="kpi-label">Critical Alerts</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Data not loaded</div>
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Today's Priorities Section
-    st.subheader("Today's Priorities")
-    st.markdown(
-        """
-        <div class="empty-state">
-            No retail data loaded yet. Insights will appear after Phase 1.
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Chart Placeholders Section
-    c_left, c_right = st.columns(2)
-
-    with c_left:
-        st.subheader("Revenue Trend")
-        st.markdown(
-            """
-            <div class="chart-placeholder">
-                Revenue data will appear after dataset initialization.
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    with c_right:
-        st.subheader("Inventory Health")
-        st.markdown(
-            """
-            <div class="chart-placeholder">
-                Inventory health analytics will appear after Phase 1.
-            </div>
-        """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # AI Copilot Placeholder Section
-    st.subheader("Ask StockSense")
-    st.text_input(
-        "Ask a question about your inventory or sales:",
-        placeholder="What needs attention today?",
-        disabled=True,
-        key="copilot_input",
-    )
-
-    st.markdown(
-        """
-        <div style="margin-top: 8px;">
-            <span style="color: #64748B; font-size: 0.85rem; margin-right: 8px;">Example questions:</span>
-            <span class="question-pill">What products are running out?</span>
-            <span class="question-pill">What is overstocked?</span>
-            <span class="question-pill">How did Milk perform this month?</span>
-        </div>
-        <div style="margin-top: 12px; color: #94A3B8; font-size: 0.85rem; font-style: italic;">
-            AI Copilot will be activated in a later phase.
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    if page == "Dashboard":
+        render_dashboard_page(db_metrics)
+    elif page == "Inventory Intelligence":
+        render_inventory_intelligence_page()
+    elif page == "Sales Analytics":
+        render_sales_analytics_stub()
+    elif page == "AI Copilot":
+        render_ai_copilot_stub()
+    elif page == "Product Details":
+        render_product_details_stub()
 
 
 if __name__ == "__main__":
     if st.runtime.exists():
-        render_dashboard()
+        render_app()
     else:
         import streamlit.web.cli as stcli
 

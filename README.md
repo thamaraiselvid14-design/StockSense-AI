@@ -21,12 +21,25 @@ Dataset contains:
 
 The dataset is synthetic and generated locally for hackathon demonstration purposes.
 
-## Planned Features
-- **Deterministic Analytics Engine**: Exact calculations for sales performance, stock levels, stock-out risk, overstocking, and slow-moving items.
-- **Anomaly Detection Engine**: Automatic identification of unusual sales spikes and drops.
-- **Evidence-Based Recommendation Engine**: Actionable operational suggestions grounded strictly in empirical data.
-- **AI Copilot**: Natural language query router and grounded explanation powered by Gemini.
-- **Interactive Dark Dashboard**: Real-time KPI summary, priorities, trends, and inventory health visuals.
+## Current Features & Development Status
+
+### Completed
+- **SQLite Retail Database**: Normalized 4-table schema (`Products`, `Stores`, `Inventory`, `Sales`) with strict validation constraints.
+- **Deterministic Synthetic Dataset Generator**: 60 days of historical sales data with engineered retail patterns.
+- **Multi-Page Application Shell**: Permanent 5-section navigation (`Dashboard`, `Inventory Intelligence`, `Sales Analytics`, `AI Copilot`, `Product Details`).
+- **Live Dashboard Metrics**: Real-time KPI cards for Today's Revenue (INR), Today's Units Sold, and Stock-out Risk count for the latest sales date (`2026-09-05`).
+- **30-Day Revenue Visualization**: Responsive Plotly line chart rendering daily revenue trend from SQLite.
+- **Top Product Visualization**: Plotly horizontal bar chart highlighting top 10 products by revenue.
+- **Inventory Intelligence Page**: Complete inventory table with store, category, and product search filters, 7-day average daily sales, and days remaining calculations.
+- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions.
+
+### Upcoming
+- Advanced stock-out risk classification (days-remaining algorithms)
+- Overstock detection engine
+- Slow-moving and non-moving inventory detection engine
+- Sales anomaly detection engine (spikes and drops)
+- Evidence-based recommendation engine
+- Gemini AI Copilot natural language query router and grounded explanations
 
 ## Technology Stack
 - **Frontend / Dashboard**: Streamlit (Dark Theme)
@@ -99,10 +112,6 @@ Copy `.env.example` to `.env` and fill in the required keys:
 GEMINI_API_KEY=your_gemini_api_key_here
 VALIDATION_KEY=your_validation_key_here
 ```
-
-## Current Development Status
-- **Phase 0 (Completed)**: Project skeleton, directory structure, placeholder backend modules, empty database and data files, dark Streamlit starter theme, and entry point.
-- **Phase 1 (Completed)**: SQLite database schema implementation, local synthetic retail dataset generation, deliberate pattern engineering, CSV exports, and live database connection in Streamlit dashboard.
 
 ## Validation Key
 The official hackathon validation key must be added to `.env` as `VALIDATION_KEY` before final submission. Do not invent or hardcode a validation key.
