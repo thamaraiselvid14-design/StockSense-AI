@@ -38,47 +38,30 @@ from backend.sales_engine import (
     get_product_performance,
     get_top_products,
 )
-
-# Load environment variables without failing if GEMINI_API_KEY is missing
-load_dotenv()
+from backend.recommendation_engine import recommend_action
+from backend.gemini_service import (
+    extract_intent,
+    generate_grounded_explanation,
+    is_gemini_available,
+    validate_numeric_safety,
+)
+from backend.query_router import route_query
 
 
 def get_deterministic_product_recommendation(
-    stockout_risk, overstock_flag, movement_status, anomaly_status, days_remaining=None
+    stockout_risk, overstock_flag, movement_status, anomaly_status, days_remaining=None, current_stock=None
 ):
-    """Maps inventory and anomaly signals to deterministic recommendation string using strict 13-level precedence."""
-    if stockout_risk == "OUT_OF_STOCK":
-        return "Replenish immediately"
-    elif stockout_risk == "CRITICAL":
-        return "Increase replenishment priority"
-    elif stockout_risk == "HIGH":
-        return "Reorder soon"
-    elif anomaly_status == "SPIKE" and (
-        (days_remaining is not None and days_remaining <= 5)
-        or stockout_risk in ["CRITICAL", "HIGH"]
-    ):
-        return "Increase replenishment priority due to rising demand"
-    elif overstock_flag == "OVERSTOCK_RISK":
-        return "Reduce next order / consider promotion"
-    elif anomaly_status == "DROP" and (
-        (days_remaining is not None and days_remaining > 30)
-        or overstock_flag == "OVERSTOCK_RISK"
-    ):
-        return "Reduce next order and review declining demand"
-    elif movement_status == "NON_MOVING":
-        return "Investigate demand / consider promotion"
-    elif movement_status == "SLOW_MOVING":
-        return "Investigate demand / consider promotion"
-    elif anomaly_status == "SPIKE":
-        return "Monitor demand and consider increasing stock"
-    elif anomaly_status == "DROP":
-        return "Review declining demand"
-    elif stockout_risk == "MEDIUM":
-        return "Monitor stock closely"
-    elif stockout_risk == "SAFE":
-        return "No immediate action needed"
-    else:
-        return "Review demand history"
+    """Delegates recommendation mapping to backend.recommendation_engine."""
+    return recommend_action(
+        {
+            "stockout_risk": stockout_risk,
+            "overstock_flag": overstock_flag,
+            "movement_status": movement_status,
+            "anomaly_status": anomaly_status,
+            "days_remaining": days_remaining,
+            "current_stock": current_stock,
+        }
+    )
 
 
 def generate_priority_alerts(report_df, anomalies_df, limit=10):
@@ -914,38 +897,164 @@ def render_product_details_page():
             )
 
 
-def render_ai_copilot_stub():
+def render_ai_copilot_page():
     st.markdown(
         """
-        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">AI Copilot</h1>
-        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
-            Ask questions about your sales and inventory data.
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap;">
+            <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin: 0;">AI Retail Copilot</h1>
+        </div>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 20px;">
+            Ask natural-language questions about stockouts, overstock, sales velocity, anomalies, and store performance.
         </p>
     """,
         unsafe_allow_html=True,
     )
 
-    st.text_input(
-        "Ask a question about your inventory or sales:",
-        placeholder="What products are running out?",
-        disabled=True,
-        key="copilot_input_stub",
-    )
+    # Gemini API Availability status banner
+    if is_gemini_available():
+        st.markdown(
+            """
+            <div style="background-color: #064E3B; border: 1px solid #059669; color: #6EE7B7; padding: 8px 14px; border-radius: 8px; font-size: 0.85rem; margin-bottom: 20px;">
+                🟢 <strong>Gemini AI Active</strong> (Evaluator Model: <code>gemini-3.5-flash-lite</code>) — Natural language intent extraction & grounded explanation enabled.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div style="background-color: #1E293B; border: 1px solid #334155; color: #38BDF8; padding: 10px 16px; border-radius: 8px; font-size: 0.9rem; margin-bottom: 20px;">
+                🤖 <strong>AI Copilot is temporarily unavailable — showing deterministic dashboard data instead</strong>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+    # Sample Questions Section
     st.markdown(
-        """
-        <div style="margin-top: 8px;">
-            <span style="color: #64748B; font-size: 0.85rem; margin-right: 8px;">Example questions:</span>
-            <span class="question-pill">What products are running out?</span>
-            <span class="question-pill">What is overstocked?</span>
-            <span class="question-pill">How did Milk perform this month?</span>
-        </div>
-        <div style="margin-top: 16px; color: #94A3B8; font-size: 0.9rem; font-style: italic;">
-            🤖 AI Copilot will be activated in Phase 5.
-        </div>
-    """,
+        "<div style='color: #94A3B8; font-size: 0.9rem; font-weight: 600; margin-bottom: 8px;'>Sample Questions:</div>",
         unsafe_allow_html=True,
     )
+    sample_cols = st.columns(4)
+
+    samples = [
+        "What products are running out of stock?",
+        "What inventory is overstocked?",
+        "Which products are slow-moving?",
+        "Show sales spikes and drops",
+        "How did Milk perform this month?",
+        "Which store sells the most Bread?",
+        "Summarize overall business performance today",
+        "What is the status of Eggs?",
+    ]
+
+    if "copilot_query" not in st.session_state:
+        st.session_state["copilot_query"] = ""
+
+    for idx, s_text in enumerate(samples):
+        col_target = sample_cols[idx % 4]
+        with col_target:
+            if st.button(s_text, key=f"sample_btn_{idx}", use_container_width=True):
+                st.session_state["copilot_query"] = s_text
+                st.rerun()
+
+    # Query Input Field
+    user_query = st.text_input(
+        "Ask a question about inventory, sales, or store operations:",
+        value=st.session_state["copilot_query"],
+        placeholder="e.g., What products are at stockout risk?",
+        key="copilot_input_field",
+    )
+
+    if user_query and user_query.strip():
+        with st.spinner("Analyzing question with Python Deterministic Engines & Gemini..."):
+            # Step 1: Extract Intent
+            intent_data = extract_intent(user_query.strip())
+
+            # Step 2: Route Query to Deterministic Engines
+            payload = route_query(intent_data)
+
+            # Step 3: Generate Grounded Explanation
+            explanation = generate_grounded_explanation(user_query.strip(), intent_data, payload)
+
+            # Step 4: Numeric Safety Validation
+            safety_res = validate_numeric_safety(explanation, payload)
+
+        # Display Pipeline Intent Badge & Target Parameters
+        extracted_intent = intent_data.get("intent", "unsupported")
+        extracted_prod = intent_data.get("product") or "All"
+        extracted_store = intent_data.get("store") or "All"
+
+        st.markdown(
+            f"""
+            <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 12px 16px; margin-top: 16px; margin-bottom: 16px;">
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85rem; color: #94A3B8;">
+                    <span>Target Intent: <strong style="color: #38BDF8;">{extracted_intent}</strong></span>
+                    <span>Product: <strong style="color: #F8FAFC;">{extracted_prod}</strong></span>
+                    <span>Store: <strong style="color: #F8FAFC;">{extracted_store}</strong></span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Canonical Recommendation Box
+        rec_text = payload.get("recommended_action", "No action needed")
+        rec_color = "#38BDF8"
+        if rec_text in ["Replenish immediately", "Increase replenishment priority"]:
+            rec_color = "#EF4444"
+        elif rec_text in ["Reorder soon", "Reduce next order", "Investigate demand"]:
+            rec_color = "#F59E0B"
+
+        st.markdown(
+            f"""
+            <div style="background-color: #1E293B; border-left: 4px solid {rec_color}; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; color: #F8FAFC;">
+                💡 <strong>Canonical Recommendation:</strong> <span style="font-size: 1.1rem; font-weight: 700; color: {rec_color};">{rec_text}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Grounded Explanation
+        st.markdown(
+            """
+            <div style="font-size: 1.1rem; font-weight: 700; color: #F8FAFC; margin-bottom: 8px;">
+                🤖 AI Copilot Answer:
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(explanation)
+
+        # Numeric Safety Badge
+        if safety_res["is_safe"]:
+            st.markdown(
+                """
+                <div style="background-color: #064E3B; color: #6EE7B7; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; display: inline-block; margin-top: 12px; margin-bottom: 20px;">
+                    🛡️ <strong>Numeric Grounding Safety Verified:</strong> All numeric figures in this explanation match deterministic backend payload evidence.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            ungrounded_str = ", ".join(safety_res["ungrounded_numbers"])
+            st.markdown(
+                f"""
+                <div style="background-color: #78350F; color: #FDE68A; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; display: inline-block; margin-top: 12px; margin-bottom: 20px;">
+                    ⚠️ <strong>Numeric Safety Flag:</strong> Found unverified numeric values ({ungrounded_str}). Please cross-reference with payload below.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Verified Evidence Payload Expander
+        with st.expander("🔍 View Verified Evidence Payload (Deterministic Backend Facts)", expanded=False):
+            st.json(payload)
+
+            details = payload.get("details", [])
+            if details and isinstance(details, list):
+                st.markdown("#### Evidence Data Table")
+                st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
 
 
 def render_app():
@@ -1119,7 +1228,7 @@ def render_app():
     elif page == "Sales Analytics":
         render_sales_analytics_page()
     elif page == "AI Copilot":
-        render_ai_copilot_stub()
+        render_ai_copilot_page()
     elif page == "Product Details":
         render_product_details_page()
 

@@ -151,26 +151,28 @@ def detect_slow_moving(product_id, store_id=None):
     return "NORMAL"
 
 
-def get_recommended_action(stockout_risk, overstock_flag, movement_status):
-    """Maps inventory signals to actionable recommendations using strict precedence rule."""
-    if stockout_risk == "OUT_OF_STOCK":
-        return "Replenish immediately"
-    elif stockout_risk == "CRITICAL":
-        return "Replenish immediately"
-    elif stockout_risk == "HIGH":
-        return "Reorder soon"
-    elif overstock_flag == "OVERSTOCK_RISK":
-        return "Reduce next order / consider promotion"
-    elif movement_status == "NON_MOVING":
-        return "Investigate demand / consider promotion"
-    elif movement_status == "SLOW_MOVING":
-        return "Investigate demand / consider promotion"
-    elif stockout_risk == "MEDIUM":
-        return "Monitor stock closely"
-    elif stockout_risk == "SAFE":
-        return "No action needed"
-    else:
-        return "Review demand history"
+from backend.recommendation_engine import recommend_action
+
+
+def get_recommended_action(
+    stockout_risk,
+    overstock_flag,
+    movement_status,
+    anomaly_status=None,
+    days_remaining=None,
+    current_stock=None,
+):
+    """Maps inventory signals to actionable recommendations using canonical recommendation engine."""
+    return recommend_action(
+        {
+            "stockout_risk": stockout_risk,
+            "overstock_flag": overstock_flag,
+            "movement_status": movement_status,
+            "anomaly_status": anomaly_status,
+            "days_remaining": days_remaining,
+            "current_stock": current_stock,
+        }
+    )
 
 
 def get_inventory_report(store_id=None):
@@ -206,7 +208,9 @@ def get_inventory_report(store_id=None):
             else:
                 movement = "NORMAL"
 
-        action = get_recommended_action(risk, overstock, movement)
+        action = get_recommended_action(
+            risk, overstock, movement, days_remaining=days_rem, current_stock=stock
+        )
 
         rows.append(
             {

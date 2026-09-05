@@ -44,13 +44,14 @@ The dataset is synthetic and generated locally for hackathon demonstration purpo
   - Sales Spike detection (`>= +50%` velocity increase)
   - Sales Drop detection (`<= -40%` velocity decrease)
   - Zero baseline protection (`INSUFFICIENT_BASELINE`, `percent_change = None`)
+- **Centralized Canonical Recommendation Engine (`backend/recommendation_engine.py`)**: Strict priority mapping for inventory risks and sales anomalies.
+- **AI Copilot & Query Router (`backend/query_router.py` & `backend/gemini_service.py`)**:
+  - Natural language intent extraction using `gemini-3.5-flash-lite`
+  - Grounded manager-facing explanations strictly backed by Python deterministic evidence payloads
+  - Defensive JSON parsing and Numeric Grounding Safety validation (zero ungrounded numbers guarantee)
+  - Lazy client initialization & deterministic fallback when API key is unconfigured
 - **Product Details Drill-down Page**: Comprehensive product performance overview, 10 key metric cards, 30-day sales history chart, store inventory position table, and deterministic recommendation banner.
 - **Interactive Inventory & Sales Tables**: Filterable data tables with `"N/A"` display formatting and zero-division protection.
-- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions and analytical engines.
-
-### Upcoming
-- Centralized recommendation engine (`recommendation_engine.py`)
-- Gemini AI Copilot natural language query router (`query_router.py`) and grounded explanations (`gemini_service.py`)
 
 ## Technology Stack
 - **Frontend / Dashboard**: Streamlit (Dark Theme)
