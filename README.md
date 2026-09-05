@@ -27,23 +27,30 @@ The dataset is synthetic and generated locally for hackathon demonstration purpo
 - **SQLite Retail Database**: Normalized 4-table schema (`Products`, `Stores`, `Inventory`, `Sales`) with strict validation constraints.
 - **Deterministic Synthetic Dataset Generator**: 60 days of historical sales data with engineered retail patterns.
 - **Multi-Page Application Shell**: Permanent 5-section navigation (`Dashboard`, `Inventory Intelligence`, `Sales Analytics`, `AI Copilot`, `Product Details`).
-- **Live Dashboard Metrics**: Real-time KPI cards for Today's Revenue (INR), Today's Units Sold, Stock-out Risk, Overstocked Products, and Slow-moving Products for latest sales date (`2026-09-05`).
-- **Today's Priority Alerts**: Evidence-backed prioritized dashboard alerts highlighting out-of-stock, critical stock-out risk, overstock, and non-moving inventory.
+- **Live Dashboard Metrics**: Real-time KPI cards for Today's Revenue (INR), Today's Units Sold, Stock-out Risk, Overstocked Products, Slow-moving Products, and Sales Anomalies for latest sales date (`2026-09-05`).
+- **Today's Priority Alerts**: Evidence-backed prioritized dashboard alerts combining stock-out risk, overstock, non-moving inventory, and sales anomalies (`SPIKE` / `DROP`).
 - **Deterministic Inventory Intelligence Engine (`backend/inventory_engine.py`)**:
   - Average Daily Sales calculation over rolling 7-day window (returns `None` when recent units = 0)
   - Days Remaining calculation (`current_stock / avg_daily_sales`; returns `0` for stock = 0)
   - Stock-out Risk Classification (`OUT_OF_STOCK`, `CRITICAL`, `HIGH`, `MEDIUM`, `SAFE`, `UNKNOWN`)
   - Overstock Detection (`OVERSTOCK_RISK` when days remaining > 30)
   - Slow-moving and Non-moving Detection (`NON_MOVING` for 14d zero sales, `SLOW_MOVING` for <30% prior week velocity)
-  - Evidence-backed Action Mapping (`Replenish immediately`, `Reorder soon`, `Reduce next order / consider promotion`, `Investigate demand / consider promotion`, `Monitor stock closely`, `No action needed`, `Review demand history`)
-- **Interactive Inventory Table**: Complete 90-position table with Store, Category, and Product search filters and `"N/A"` display formatting.
-- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions and `backend/inventory_engine.py`.
+- **Deterministic Sales Analytics Engine (`backend/sales_engine.py`)**:
+  - Period-over-period revenue growth % (`(current - prev) / prev * 100`; returns `None` if prev revenue = 0)
+  - Store sales comparison and top-two store sales gap calculation
+  - 30-day daily revenue trend and category sales performance breakdown
+- **Deterministic Sales Anomaly Detection Engine (`backend/anomaly_engine.py`)**:
+  - 7-day recent vs 21-day non-overlapping baseline sales velocity comparison
+  - Sales Spike detection (`>= +50%` velocity increase)
+  - Sales Drop detection (`<= -40%` velocity decrease)
+  - Zero baseline protection (`INSUFFICIENT_BASELINE`, `percent_change = None`)
+- **Product Details Drill-down Page**: Comprehensive product performance overview, 10 key metric cards, 30-day sales history chart, store inventory position table, and deterministic recommendation banner.
+- **Interactive Inventory & Sales Tables**: Filterable data tables with `"N/A"` display formatting and zero-division protection.
+- **Strict UI Architecture**: Zero raw SQL queries inside UI code; all database interactions routed through semantic `backend/database.py` functions and analytical engines.
 
 ### Upcoming
-- Sales anomaly detection engine (sales spikes and sales drops)
-- Detailed product performance and store breakdown analytics
-- Evidence-based recommendation engine (`recommendation_engine.py`)
-- Gemini AI Copilot natural language query router and grounded explanations
+- Centralized recommendation engine (`recommendation_engine.py`)
+- Gemini AI Copilot natural language query router (`query_router.py`) and grounded explanations (`gemini_service.py`)
 
 ## Technology Stack
 - **Frontend / Dashboard**: Streamlit (Dark Theme)

@@ -10,86 +10,178 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from backend.anomaly_engine import detect_sales_spike_or_drop, get_all_anomalies
 from backend.database import (
+    get_all_products_list,
     get_categories,
     get_dashboard_kpis,
     get_database_counts,
+    get_product_daily_sales_history,
+    get_product_info,
+    get_product_inventory,
     get_revenue_trend,
+    get_store_sales_comparison,
     get_stores_list,
     get_top_products_by_revenue,
 )
-from backend.inventory_engine import get_inventory_report
+from backend.inventory_engine import (
+    calculate_avg_daily_sales,
+    calculate_days_remaining,
+    classify_stockout_risk,
+    detect_overstock,
+    detect_slow_moving,
+    get_inventory_report,
+)
+from backend.sales_engine import (
+    compare_stores,
+    get_category_performance,
+    get_product_performance,
+    get_top_products,
+)
 
 # Load environment variables without failing if GEMINI_API_KEY is missing
 load_dotenv()
 
 
-def generate_priority_alerts(report_df, limit=8):
-    """Generates a prioritized list of evidence-backed alert dicts from inventory report."""
-    if report_df.empty:
-        return []
+def get_deterministic_product_recommendation(
+    stockout_risk, overstock_flag, movement_status, anomaly_status, days_remaining=None
+):
+    """Maps inventory and anomaly signals to deterministic recommendation string using strict 13-level precedence."""
+    if stockout_risk == "OUT_OF_STOCK":
+        return "Replenish immediately"
+    elif stockout_risk == "CRITICAL":
+        return "Increase replenishment priority"
+    elif stockout_risk == "HIGH":
+        return "Reorder soon"
+    elif anomaly_status == "SPIKE" and (
+        (days_remaining is not None and days_remaining <= 5)
+        or stockout_risk in ["CRITICAL", "HIGH"]
+    ):
+        return "Increase replenishment priority due to rising demand"
+    elif overstock_flag == "OVERSTOCK_RISK":
+        return "Reduce next order / consider promotion"
+    elif anomaly_status == "DROP" and (
+        (days_remaining is not None and days_remaining > 30)
+        or overstock_flag == "OVERSTOCK_RISK"
+    ):
+        return "Reduce next order and review declining demand"
+    elif movement_status == "NON_MOVING":
+        return "Investigate demand / consider promotion"
+    elif movement_status == "SLOW_MOVING":
+        return "Investigate demand / consider promotion"
+    elif anomaly_status == "SPIKE":
+        return "Monitor demand and consider increasing stock"
+    elif anomaly_status == "DROP":
+        return "Review declining demand"
+    elif stockout_risk == "MEDIUM":
+        return "Monitor stock closely"
+    elif stockout_risk == "SAFE":
+        return "No immediate action needed"
+    else:
+        return "Review demand history"
 
+
+def generate_priority_alerts(report_df, anomalies_df, limit=10):
+    """Generates a prioritized list of evidence-backed alert dicts combining inventory and sales anomaly signals."""
     alerts = []
+    seen_keys = set()
 
-    for _, r in report_df.iterrows():
-        product_name = r["product"]
-        store_name = r["store"]
-        stock = r["current_stock"]
-        days_rem = r["days_remaining"]
-        risk = r["stockout_risk"]
-        overstock = r["overstock_flag"]
-        movement = r["movement_status"]
+    # Process Inventory Alerts
+    if not report_df.empty:
+        for _, r in report_df.iterrows():
+            prod_id = r["product_id"]
+            store_id = r["store_id"]
+            product_name = r["product"]
+            store_name = r["store"]
+            days_rem = r["days_remaining"]
+            risk = r["stockout_risk"]
+            overstock = r["overstock_flag"]
+            movement = r["movement_status"]
 
-        alert_type = None
-        priority = 99
-        message = ""
-        badge_color = "#94A3B8"
+            key = (prod_id, store_id)
 
-        # Determine single highest-priority alert for this inventory position
-        if risk == "OUT_OF_STOCK":
-            priority = 1
-            badge_color = "#EF4444"
-            message = f"🔴 <strong>{product_name}</strong> — {store_name} — currently out of stock"
-            alert_type = "OUT_OF_STOCK"
-        elif risk == "CRITICAL":
-            priority = 2
-            badge_color = "#EF4444"
-            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
-            message = f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>"
-            alert_type = "CRITICAL"
-        elif risk == "HIGH":
-            priority = 3
-            badge_color = "#F59E0B"
-            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
-            message = f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>"
-            alert_type = "HIGH"
-        elif overstock == "OVERSTOCK_RISK":
-            priority = 4
-            badge_color = "#F59E0B"
-            days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
-            message = f"🟠 <strong>{product_name}</strong> — {store_name} — approximately <strong>{days_str} days</strong> of stock remaining"
-            alert_type = "OVERSTOCK"
-        elif movement == "NON_MOVING":
-            priority = 5
-            badge_color = "#EAB308"
-            message = f"🟡 <strong>{product_name}</strong> — {store_name} — no sales recorded in the last 14 days"
-            alert_type = "NON_MOVING"
-        elif movement == "SLOW_MOVING":
-            priority = 6
-            badge_color = "#EAB308"
-            message = f"🟡 <strong>{product_name}</strong> — {store_name} — recent sales fell below 30% of the previous week's rate"
-            alert_type = "SLOW_MOVING"
+            if risk == "OUT_OF_STOCK":
+                seen_keys.add(key)
+                alerts.append(
+                    {
+                        "priority": 1,
+                        "badge_color": "#EF4444",
+                        "message": f"🔴 <strong>{product_name}</strong> — {store_name} — currently out of stock",
+                    }
+                )
+            elif risk == "CRITICAL":
+                seen_keys.add(key)
+                days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+                alerts.append(
+                    {
+                        "priority": 2,
+                        "badge_color": "#EF4444",
+                        "message": f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>",
+                    }
+                )
+            elif risk == "HIGH":
+                seen_keys.add(key)
+                days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+                alerts.append(
+                    {
+                        "priority": 3,
+                        "badge_color": "#F59E0B",
+                        "message": f"🔴 <strong>{product_name}</strong> — {store_name} — likely stock-out in <strong>{days_str} days</strong>",
+                    }
+                )
+            elif overstock == "OVERSTOCK_RISK":
+                seen_keys.add(key)
+                days_str = f"{days_rem:.1f}" if pd.notna(days_rem) else "N/A"
+                alerts.append(
+                    {
+                        "priority": 6,
+                        "badge_color": "#F59E0B",
+                        "message": f"🟠 <strong>{product_name}</strong> — {store_name} — approximately <strong>{days_str} days</strong> of stock remaining",
+                    }
+                )
+            elif movement == "NON_MOVING":
+                seen_keys.add(key)
+                alerts.append(
+                    {
+                        "priority": 7,
+                        "badge_color": "#EAB308",
+                        "message": f"🟡 <strong>{product_name}</strong> — {store_name} — no sales recorded in the last 14 days",
+                    }
+                )
+            elif movement == "SLOW_MOVING":
+                seen_keys.add(key)
+                alerts.append(
+                    {
+                        "priority": 8,
+                        "badge_color": "#EAB308",
+                        "message": f"🟡 <strong>{product_name}</strong> — {store_name} — recent sales fell below 30% of the previous week's rate",
+                    }
+                )
 
-        if alert_type:
-            alerts.append(
-                {
-                    "priority": priority,
-                    "message": message,
-                    "badge_color": badge_color,
-                    "product": product_name,
-                    "store": store_name,
-                }
-            )
+    # Process Sales Anomaly Alerts at Product Level
+    if not anomalies_df.empty:
+        for _, a in anomalies_df.iterrows():
+            prod_id = a["product_id"]
+            prod_name = a["product"]
+            pct = a["percent_change"]
+            status = a["status"]
+
+            if status == "SPIKE" and pd.notna(pct):
+                alerts.append(
+                    {
+                        "priority": 5,
+                        "badge_color": "#10B981",
+                        "message": f"🟢 <strong>{prod_name}</strong> — sales up <strong>+{pct:.1f}%</strong> versus baseline",
+                    }
+                )
+            elif status == "DROP" and pd.notna(pct):
+                alerts.append(
+                    {
+                        "priority": 4,
+                        "badge_color": "#EAB308",
+                        "message": f"🟡 <strong>{prod_name}</strong> — sales down <strong>{pct:.1f}%</strong> versus baseline",
+                    }
+                )
 
     # Sort alerts by priority score ascending
     alerts.sort(key=lambda x: x["priority"])
@@ -100,8 +192,8 @@ def render_dashboard_page(db_metrics):
     kpis = get_dashboard_kpis()
     latest_date = kpis["latest_date"]
 
-    # Fetch inventory report to derive inventory metrics and alerts
     inventory_df = get_inventory_report()
+    anomalies_df = get_all_anomalies()
 
     if not inventory_df.empty:
         stockout_risk_count = len(
@@ -125,6 +217,8 @@ def render_dashboard_page(db_metrics):
         stockout_risk_count = 0
         overstock_count = 0
         slow_moving_count = 0
+
+    anomaly_count = len(anomalies_df) if not anomalies_df.empty else 0
 
     st.markdown(
         f"""
@@ -213,11 +307,11 @@ def render_dashboard_page(db_metrics):
 
     with r2_c3:
         st.markdown(
-            """
+            f"""
             <div class="kpi-card amber-accent">
                 <div class="kpi-label">Sales Anomalies</div>
-                <div class="kpi-value">—</div>
-                <div class="kpi-subtitle">Phase 4 detection</div>
+                <div class="kpi-value">{anomaly_count}</div>
+                <div class="kpi-subtitle">Spikes / Drops detected</div>
             </div>
         """,
             unsafe_allow_html=True,
@@ -227,7 +321,7 @@ def render_dashboard_page(db_metrics):
 
     # Today's Priority Alerts Section
     st.subheader("Today's Priority Alerts")
-    priority_alerts = generate_priority_alerts(inventory_df, limit=8)
+    priority_alerts = generate_priority_alerts(inventory_df, anomalies_df, limit=10)
 
     if priority_alerts:
         alert_html_items = ""
@@ -249,7 +343,7 @@ def render_dashboard_page(db_metrics):
         st.markdown(
             """
             <div class="empty-state" style="margin-bottom: 24px;">
-                🟢 All inventory levels are healthy. No priority alerts detected today.
+                🟢 All inventory levels and demand trends are normal. No priority alerts detected today.
             </div>
         """,
             unsafe_allow_html=True,
@@ -436,19 +530,388 @@ def render_inventory_intelligence_page():
     )
 
 
-def render_sales_analytics_stub():
+def render_sales_analytics_page():
     st.markdown(
         """
-        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">Sales Analytics</h1>
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 4px;">Sales Analytics</h1>
         <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
-            Detailed sales trends and product performance are coming in Phase 4.
+            Understand revenue trends, product performance and unusual demand changes.
         </p>
-        <div class="empty-state">
-            📊 Sales Analytics features (store breakdown, category trends, peak hours) will be unlocked in Phase 4.
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # Filter controls
+    c1, c2, c3 = st.columns(3)
+
+    stores_data = get_stores_list()
+    store_options = ["All Stores"] + [
+        f"{s['store_name']} ({s['location']})" for s in stores_data
+    ]
+    store_map = {
+        f"{s['store_name']} ({s['location']})": s["store_id"] for s in stores_data
+    }
+
+    products_data = get_all_products_list()
+    product_options = [f"{p['product_name']} ({p['product_id']})" for p in products_data]
+    prod_map = {f"{p['product_name']} ({p['product_id']})": p["product_id"] for p in products_data}
+
+    with c1:
+        sel_store = st.selectbox("Store Filter", store_options, index=0, key="sa_store")
+    with c2:
+        sel_prod = st.selectbox("Product Drilldown", product_options, index=0, key="sa_prod")
+    with c3:
+        sel_period = st.selectbox("Analysis Period", [7, 14, 30], index=2, key="sa_period")
+
+    store_id = store_map[sel_store] if sel_store != "All Stores" else None
+    product_id = prod_map[sel_prod]
+
+    # Revenue Trend Section
+    st.subheader(f"Daily Revenue Trend ({sel_period} Days)")
+    trend_data = get_revenue_trend(days=sel_period, store_id=store_id)
+    if trend_data:
+        df_tr = pd.DataFrame(trend_data)
+        fig_tr = px.line(
+            df_tr,
+            x="date",
+            y="revenue",
+            labels={"date": "Date", "revenue": "Revenue (₹)"},
+            title=None,
+        )
+        fig_tr.update_traces(
+            line=dict(color="#38BDF8", width=3),
+            hovertemplate="<b>Date:</b> %{x}<br><b>Revenue:</b> ₹%{y:,.2f}<extra></extra>",
+        )
+        fig_tr.update_layout(
+            paper_bgcolor="#111827",
+            plot_bgcolor="#111827",
+            font=dict(color="#F8FAFC"),
+            margin=dict(l=20, r=20, t=20, b=20),
+            height=300,
+            xaxis=dict(showgrid=False, color="#94A3B8"),
+            yaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+        )
+        st.plotly_chart(fig_tr, use_container_width=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Selected Product Performance Cards
+    perf = get_product_performance(product_id, period_days=sel_period)
+    st.subheader(f"Performance Overview: {perf['product_name']}")
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        st.metric("Units Sold", f"{perf['total_units_sold']:,}")
+    with m2:
+        st.metric("Total Revenue", f"₹{perf['total_revenue']:,.2f}")
+    with m3:
+        growth_str = (
+            f"{perf['growth_percent']:+.1f}%"
+            if perf["growth_percent"] is not None
+            else "N/A"
+        )
+        st.metric("Revenue Growth", growth_str)
+    with m4:
+        st.metric("Current Stock", f"{perf['current_stock']}")
+    with m5:
+        best_store_str = (
+            perf["best_performing_store"]["store_name"]
+            if perf["best_performing_store"]
+            else "N/A"
+        )
+        st.metric("Best Store", best_store_str)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Store Comparison & Category Performance Row
+    sc_col, cat_col = st.columns([1, 1])
+
+    with sc_col:
+        st.subheader("Store Sales Comparison")
+        comp_res = compare_stores(product_id, period_days=sel_period)
+        df_comp = comp_res["df"]
+
+        if not df_comp.empty:
+            fig_comp = px.bar(
+                df_comp,
+                x="store",
+                y="units_sold",
+                labels={"store": "Store", "units_sold": "Units Sold"},
+                color="units_sold",
+                color_continuous_scale="Blues",
+            )
+            fig_comp.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#F8FAFC"),
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=280,
+                coloraxis_showscale=False,
+                xaxis=dict(showgrid=False, color="#94A3B8"),
+                yaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+            gap = comp_res["gap_between_top_two"]
+            gap_str = f"<strong>{gap} units</strong>" if gap is not None else "N/A"
+            st.markdown(
+                f"<div style='color: #94A3B8; font-size: 0.85rem;'>Top-store lead gap: {gap_str}</div>",
+                unsafe_allow_html=True,
+            )
+
+    with cat_col:
+        st.subheader(f"Category Revenue Breakdown ({sel_period} Days)")
+        cat_perf = get_category_performance(period_days=sel_period)
+        if cat_perf:
+            df_cat = pd.DataFrame(cat_perf).sort_values(
+                by="revenue", ascending=True
+            )
+            fig_cat = px.bar(
+                df_cat,
+                x="revenue",
+                y="category",
+                orientation="h",
+                labels={"revenue": "Revenue (₹)", "category": "Category"},
+            )
+            fig_cat.update_traces(
+                marker_color="#38BDF8",
+                hovertemplate="<b>Category:</b> %{y}<br><b>Revenue:</b> ₹%{x:,.2f}<extra></extra>",
+            )
+            fig_cat.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#F8FAFC"),
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=280,
+                xaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+                yaxis=dict(showgrid=False, color="#94A3B8"),
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Sales Anomaly Table Section
+    st.subheader("Sales Anomaly Detection")
+    st.caption("Products exhibiting unusual sales spikes (≥+50%) or drops (≤-40%) versus 21-day baseline")
+
+    anom_df = get_all_anomalies()
+    if not anom_df.empty:
+        disp_anom = []
+        for _, r in anom_df.iterrows():
+            pct = r["percent_change"]
+            pct_str = f"{pct:+.1f}%" if pd.notna(pct) else "N/A"
+            disp_anom.append(
+                {
+                    "Product": r["product"],
+                    "Category": r["category"],
+                    "Status": r["status"],
+                    "Recent 7-Day Avg": f"{r['recent_avg']:.2f} units/day",
+                    "Baseline 21-Day Avg": f"{r['baseline_avg']:.2f} units/day",
+                    "Percent Change": pct_str,
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(disp_anom),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Product": st.column_config.TextColumn("Product", width="medium"),
+                "Category": st.column_config.TextColumn("Category", width="small"),
+                "Status": st.column_config.TextColumn("Status"),
+                "Recent 7-Day Avg": st.column_config.TextColumn("Recent 7-Day Avg"),
+                "Baseline 21-Day Avg": st.column_config.TextColumn("Baseline 21-Day Avg"),
+                "Percent Change": st.column_config.TextColumn("Percent Change"),
+            },
+        )
+    else:
+        st.info("No sales anomalies detected for the current period.")
+
+
+def render_product_details_page():
+    st.markdown(
+        """
+        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 4px;">Product Details</h1>
+        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
+            Detailed product performance and inventory history.
+        </p>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    products_data = get_all_products_list()
+    product_options = [f"{p['product_name']} ({p['product_id']})" for p in products_data]
+    prod_map = {f"{p['product_name']} ({p['product_id']})": p["product_id"] for p in products_data}
+
+    sel_prod_label = st.selectbox("Select Product", product_options, index=0, key="pd_select")
+    product_id = prod_map[sel_prod_label]
+
+    perf = get_product_performance(product_id, period_days=30)
+    anom = detect_sales_spike_or_drop(product_id, store_id=None)
+
+    # Product Header Info
+    st.markdown(
+        f"""
+        <div style="background-color: #111827; border: 1px solid #1F2937; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+                <div>
+                    <h2 style="margin: 0; font-size: 1.5rem; font-weight: 700; color: #F8FAFC;">{perf['product_name']}</h2>
+                    <div style="color: #94A3B8; font-size: 0.9rem; margin-top: 4px;">
+                        Category: <strong>{perf['category']}</strong> | Product ID: <code>{perf['product_id']}</code>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 20px; font-size: 0.9rem; color: #94A3B8;">
+                    <span>Unit Price: <strong style="color: #F8FAFC;">₹{perf['price']:,.2f}</strong></span>
+                    <span>Reorder Level: <strong style="color: #F8FAFC;">{perf['reorder_level']} units</strong></span>
+                </div>
+            </div>
         </div>
     """,
         unsafe_allow_html=True,
     )
+
+    # Evaluate Overall Product Inventory & Risk
+    inv_report = get_inventory_report()
+    p_inv = inv_report[inv_report["product_id"] == product_id]
+
+    if not p_inv.empty:
+        total_stock = int(p_inv["current_stock"].sum())
+        total_rec_units = int(p_inv["recent_7_units"].sum())
+        avg_daily = (total_rec_units / 7.0) if total_rec_units > 0 else None
+        days_rem = calculate_days_remaining(total_stock, avg_daily)
+        stock_risk = classify_stockout_risk(days_rem)
+        overstock = (
+            "OVERSTOCK_RISK"
+            if (days_rem is not None and days_rem > 30)
+            else "NORMAL"
+        )
+        total_14 = int(p_inv["last_14_units"].sum())
+        if total_14 == 0:
+            movement = "NON_MOVING"
+        else:
+            prior_tot = int(p_inv["prior_7_units"].sum())
+            if prior_tot > 0 and (total_rec_units / 7.0) < 0.30 * (prior_tot / 7.0):
+                movement = "SLOW_MOVING"
+            else:
+                movement = "NORMAL"
+    else:
+        total_stock = 0
+        avg_daily = None
+        days_rem = None
+        stock_risk = "UNKNOWN"
+        overstock = "NORMAL"
+        movement = "NORMAL"
+
+    anom_status = anom["status"]
+
+    # Deterministic Recommendation
+    rec_text = get_deterministic_product_recommendation(
+        stock_risk, overstock, movement, anom_status, days_rem
+    )
+
+    st.markdown(
+        f"""
+        <div style="background-color: #1E293B; border-left: 4px solid #38BDF8; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; color: #F8FAFC;">
+            💡 <strong>Recommended Action:</strong> {rec_text}
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # 10 Metric Cards in 2 rows
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.metric("30-Day Units Sold", f"{perf['total_units_sold']:,}")
+    with c2:
+        st.metric("30-Day Revenue", f"₹{perf['total_revenue']:,.2f}")
+    with c3:
+        g_str = (
+            f"{perf['growth_percent']:+.1f}%"
+            if perf["growth_percent"] is not None
+            else "N/A"
+        )
+        st.metric("Revenue Growth", g_str)
+    with c4:
+        st.metric("Current Inventory", f"{total_stock} units")
+    with c5:
+        avg_str = f"{avg_daily:.2f}" if avg_daily is not None else "N/A"
+        st.metric("Avg Daily Sales", avg_str)
+
+    c6, c7, c8, c9, c10 = st.columns(5)
+    with c6:
+        d_str = f"{days_rem:.1f}" if days_rem is not None else "N/A"
+        st.metric("Days Remaining", d_str)
+    with c7:
+        st.metric("Stockout Risk", stock_risk)
+    with c8:
+        st.metric("Overstock Status", overstock)
+    with c9:
+        st.metric("Movement Status", movement)
+    with c10:
+        st.metric("Sales Anomaly", anom_status)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Daily Sales History Chart & Store Inventory Table
+    ch_col, tbl_col = st.columns([3, 2])
+
+    with ch_col:
+        st.subheader("30-Day Sales History")
+        history = get_product_daily_sales_history(product_id, days=30)
+        if history:
+            df_hist = pd.DataFrame(history)
+            fig_hist = px.line(
+                df_hist,
+                x="date",
+                y="units_sold",
+                labels={"date": "Date", "units_sold": "Units Sold"},
+            )
+            fig_hist.update_traces(
+                line=dict(color="#818CF8", width=3),
+                hovertemplate="<b>Date:</b> %{x}<br><b>Units Sold:</b> %{y}<extra></extra>",
+            )
+            fig_hist.update_layout(
+                paper_bgcolor="#111827",
+                plot_bgcolor="#111827",
+                font=dict(color="#F8FAFC"),
+                margin=dict(l=20, r=20, t=20, b=20),
+                height=300,
+                xaxis=dict(showgrid=False, color="#94A3B8"),
+                yaxis=dict(showgrid=True, gridcolor="#1F2937", color="#94A3B8"),
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+    with tbl_col:
+        st.subheader("Inventory Position by Store")
+        if not p_inv.empty:
+            store_rows = []
+            for _, sr in p_inv.iterrows():
+                st_stock = int(sr["current_stock"])
+                st_avg = sr["avg_daily_sales"]
+                st_days = sr["days_remaining"]
+
+                st_avg_str = f"{st_avg:.2f}" if pd.notna(st_avg) and st_avg is not None else "N/A"
+                if st_stock == 0:
+                    st_days_str = "0.0"
+                elif pd.notna(st_days) and st_days is not None:
+                    st_days_str = f"{st_days:.1f}"
+                else:
+                    st_days_str = "N/A"
+
+                store_rows.append(
+                    {
+                        "Store": sr["store"],
+                        "Stock": st_stock,
+                        "Avg Sales": st_avg_str,
+                        "Days Rem": st_days_str,
+                        "Risk": sr["stockout_risk"],
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(store_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def render_ai_copilot_stub():
@@ -478,22 +941,7 @@ def render_ai_copilot_stub():
             <span class="question-pill">How did Milk perform this month?</span>
         </div>
         <div style="margin-top: 16px; color: #94A3B8; font-size: 0.9rem; font-style: italic;">
-            🤖 AI Copilot will be activated in a later phase.
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_product_details_stub():
-    st.markdown(
-        """
-        <h1 style="font-size: 2rem; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">Product Details</h1>
-        <p style="color: #94A3B8; font-size: 1.05rem; margin-top: 0; margin-bottom: 24px;">
-            Detailed product performance and inventory history.
-        </p>
-        <div class="empty-state">
-            📦 Product Details view (individual product velocity, reorder calculation, historical demand graph) coming soon.
+            🤖 AI Copilot will be activated in Phase 5.
         </div>
     """,
         unsafe_allow_html=True,
@@ -669,11 +1117,11 @@ def render_app():
     elif page == "Inventory Intelligence":
         render_inventory_intelligence_page()
     elif page == "Sales Analytics":
-        render_sales_analytics_stub()
+        render_sales_analytics_page()
     elif page == "AI Copilot":
         render_ai_copilot_stub()
     elif page == "Product Details":
-        render_product_details_stub()
+        render_product_details_page()
 
 
 if __name__ == "__main__":

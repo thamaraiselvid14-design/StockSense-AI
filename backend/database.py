@@ -131,7 +131,7 @@ def execute_many(query, seq_of_params=()):
 
 
 # -----------------------------------------------------------------------------
-# SEMANTIC DATABASE QUERY FUNCTIONS FOR PHASE 2 & 3 (NO RAW SQL IN UI/ENGINE)
+# SEMANTIC DATABASE QUERY FUNCTIONS FOR PHASE 2, 3 & 4 (NO RAW SQL IN UI/ENGINE)
 # -----------------------------------------------------------------------------
 
 
@@ -219,24 +219,38 @@ def get_dashboard_kpis():
     }
 
 
-def get_revenue_trend(days=30):
+def get_revenue_trend(days=30, store_id=None):
     """Returns daily revenue for the latest 'days' sales dates ending on latest_sales_date."""
     latest_date = get_latest_sales_date()
     if not latest_date:
         return []
 
-    rows = fetch_all(
-        """
-        SELECT date, SUM(revenue) as revenue
-        FROM Sales
-        WHERE date IN (
-            SELECT DISTINCT date FROM Sales WHERE date <= ? ORDER BY date DESC LIMIT ?
+    if store_id:
+        rows = fetch_all(
+            """
+            SELECT date, SUM(revenue) as revenue
+            FROM Sales
+            WHERE store_id = ? AND date IN (
+                SELECT DISTINCT date FROM Sales WHERE date <= ? ORDER BY date DESC LIMIT ?
+            )
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            (store_id, latest_date, days),
         )
-        GROUP BY date
-        ORDER BY date ASC
-        """,
-        (latest_date, days),
-    )
+    else:
+        rows = fetch_all(
+            """
+            SELECT date, SUM(revenue) as revenue
+            FROM Sales
+            WHERE date IN (
+                SELECT DISTINCT date FROM Sales WHERE date <= ? ORDER BY date DESC LIMIT ?
+            )
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            (latest_date, days),
+        )
 
     return [{"date": row["date"], "revenue": float(row["revenue"])} for row in rows]
 
@@ -429,6 +443,127 @@ def get_product_sales_total(product_id, store_id=None, start_date=None, end_date
 
     row = fetch_one(query, tuple(params))
     return int(row[0]) if row else 0
+
+
+def get_product_period_metrics(product_id, start_date, end_date, store_id=None):
+    """Returns units_sold and revenue dict for a product within date bounds."""
+    query = """
+        SELECT COALESCE(SUM(quantity), 0) as units_sold, COALESCE(SUM(revenue), 0.0) as revenue
+        FROM Sales
+        WHERE product_id = ? AND date >= ? AND date <= ?
+    """
+    params = [product_id, start_date, end_date]
+    if store_id:
+        query += " AND store_id = ?"
+        params.append(store_id)
+
+    row = fetch_one(query, tuple(params))
+    if row:
+        return {"units_sold": int(row["units_sold"]), "revenue": float(row["revenue"])}
+    return {"units_sold": 0, "revenue": 0.0}
+
+
+def get_store_sales_comparison(product_id, start_date, end_date):
+    """Returns sales units and revenue per store for a product within date bounds."""
+    rows = fetch_all(
+        """
+        SELECT 
+            s.store_id,
+            st.store_name,
+            st.location,
+            COALESCE(SUM(s.quantity), 0) as units_sold,
+            COALESCE(SUM(s.revenue), 0.0) as revenue
+        FROM Stores st
+        LEFT JOIN Sales s ON st.store_id = s.store_id AND s.product_id = ? AND s.date >= ? AND s.date <= ?
+        GROUP BY st.store_id, st.store_name, st.location
+        ORDER BY units_sold DESC, revenue DESC
+        """,
+        (product_id, start_date, end_date),
+    )
+
+    return [
+        {
+            "store_id": row["store_id"],
+            "store_name": row["store_name"],
+            "location": row["location"],
+            "store": f"{row['store_name']} ({row['location']})",
+            "units_sold": int(row["units_sold"]),
+            "revenue": float(row["revenue"]),
+        }
+        for row in rows
+    ]
+
+
+def get_category_sales_performance(start_date, end_date):
+    """Aggregates revenue and units sold grouped by category within date bounds."""
+    rows = fetch_all(
+        """
+        SELECT 
+            p.category,
+            COALESCE(SUM(s.quantity), 0) as units_sold,
+            COALESCE(SUM(s.revenue), 0.0) as revenue
+        FROM Products p
+        LEFT JOIN Sales s ON p.product_id = s.product_id AND s.date >= ? AND s.date <= ?
+        GROUP BY p.category
+        ORDER BY revenue DESC
+        """,
+        (start_date, end_date),
+    )
+
+    return [
+        {
+            "category": row["category"],
+            "units_sold": int(row["units_sold"]),
+            "revenue": float(row["revenue"]),
+        }
+        for row in rows
+    ]
+
+
+def get_product_daily_sales_history(product_id, days=30):
+    """Returns daily units sold and revenue history for a product for the latest 'days' dates."""
+    latest_date = get_latest_sales_date()
+    if not latest_date:
+        return []
+
+    rows = fetch_all(
+        """
+        SELECT date, SUM(quantity) as units_sold, SUM(revenue) as revenue
+        FROM Sales
+        WHERE product_id = ? AND date IN (
+            SELECT DISTINCT date FROM Sales WHERE date <= ? ORDER BY date DESC LIMIT ?
+        )
+        GROUP BY date
+        ORDER BY date ASC
+        """,
+        (product_id, latest_date, days),
+    )
+
+    return [
+        {
+            "date": row["date"],
+            "units_sold": int(row["units_sold"]),
+            "revenue": float(row["revenue"]),
+        }
+        for row in rows
+    ]
+
+
+def get_product_info(product_id):
+    """Returns dict of product details or None."""
+    row = fetch_one(
+        "SELECT product_id, product_name, category, price, reorder_level FROM Products WHERE product_id = ?",
+        (product_id,),
+    )
+    if row:
+        return dict(row)
+    return None
+
+
+def get_all_products_list():
+    """Returns list of all products sorted by product_id."""
+    rows = fetch_all("SELECT product_id, product_name, category, price, reorder_level FROM Products ORDER BY product_id ASC")
+    return [dict(row) for row in rows]
 
 
 def get_product_inventory(product_id, store_id=None):
