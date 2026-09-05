@@ -92,7 +92,8 @@ def _fallback_intent_extraction(user_question: str) -> dict:
             "timeframe": None,
         }
 
-    intent = "general_today_summary"
+    # Default intent to unsupported if no retail keywords match
+    intent = "unsupported"
     product = None
     store = None
     timeframe = None

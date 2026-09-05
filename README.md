@@ -73,25 +73,25 @@ StockSense AI implements deterministic safeguards and defensive evidence handlin
    - `calculate_days_remaining()` returns `0`.
    - `classify_stockout_risk()` evaluates to `OUT_OF_STOCK`.
    - `recommend_action()` returns `"Replenish immediately"`.
-   - Copilot payload includes canonical note: `"Product is out of stock across all selected stores."`
+   - Copilot payload includes canonical note: `"Product is currently out of stock."`
 
 3. **Unknown Product Fail-Closed (`"iPhone"`, `"Laptop"`)**:
    - 5-Stage Entity Resolver evaluates exact matches, normalized matches, substring matches, and high-confidence typo fuzzy matches (`difflib.get_close_matches` with `cutoff >= 0.80`).
    - Unrecognized items (such as `"iPhone"` or `"Laptop"`) fail closed to `status: "insufficient_data"`.
-   - Finding returns: `"Product 'iPhone' was not found in the retail database catalog."`
+   - Finding returns: `"No product matching 'iPhone' exists in the current dataset."`
    - Recommendation returns: `"No recommendation available"`.
 
-4. **Out-of-Domain Query Safeguard (`"Who won the cricket match?"`)**:
+4. **Out-of-Domain Query Safeguard (`"Who will win tomorrow's cricket match?"`)**:
    - Unrelated domain queries map to `status: "unsupported"`.
-   - Finding returns: `"This question is outside the scope of retail sales and inventory management."`
+   - Finding returns: `"This question cannot be answered from the retail sales and inventory data available to StockSense AI."`
    - Recommendation returns: `"No recommendation available"`.
 
-5. **Missing Schema Attribute (`"Who supplies Milk?"`)**:
+5. **Missing Schema Attribute (`"Which supplier offers the cheapest Milk?"`)**:
    - Schema attributes absent from the SQLite database (e.g. `supplier`) map to `status: "unsupported"`.
    - Entity resolver identifies the recognized product (`"Milk 1L"`).
-   - Finding returns: `"Supplier information is not tracked in the current database schema."`
+   - Finding returns: `"Supplier information is not available in the current dataset, so I cannot determine the cheapest supplier."`
    - Evidence payload contains `{"recognized_product": "Milk 1L", "missing_attribute": "supplier"}`.
-   - Recommendation returns: `"No recommendation available"`.
+   - Recommendation returns: `"No recommendation available"` .
 
 6. **Gemini API Failure & Fallback Safeguards**:
    - If `GEMINI_API_KEY` is unconfigured, invalid, or API calls fail, the Copilot automatically displays a fallback explanation banner without raising unhandled tracebacks.
