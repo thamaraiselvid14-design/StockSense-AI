@@ -51,7 +51,51 @@ The dataset is synthetic and generated locally for hackathon demonstration purpo
   - Defensive JSON parsing and Numeric Grounding Safety validation (zero ungrounded numbers guarantee)
   - Lazy client initialization & deterministic fallback when API key is unconfigured
 - **Product Details Drill-down Page**: Comprehensive product performance overview, 10 key metric cards, 30-day sales history chart, store inventory position table, and deterministic recommendation banner.
-- **Interactive Inventory & Sales Tables**: Filterable data tables with `"N/A"` display formatting and zero-division protection.
+- **Edge-Case Handling & Evidence Safety**:
+  - Stock > 0 with zero recent sales handled cleanly (`avg_daily_sales: None`, `days_remaining: None`, `stockout_risk: UNKNOWN`, `"N/A"` UI formatting, canonical note `MSG_NO_RECENT_SALES`).
+  - Zero stock classified as `OUT_OF_STOCK` (`days_remaining: 0`, recommendation `"Replenish immediately"`, canonical note `MSG_ZERO_INVENTORY`).
+  - Unknown products fail closed to `status: "insufficient_data"` with `"No recommendation available"` and catalog error message.
+  - Out-of-domain queries map to `status: "unsupported"` with `"No recommendation available"` and standard out-of-scope finding.
+  - Missing schema attributes (e.g., supplier) map to `status: "unsupported"` with recognized product evidence (`"Milk 1L"`) and missing attribute details.
+  - Gemini API failure safeguards prevent zero tracebacks and skip LLM generation on unsupported payloads to guarantee zero hallucinations.
+
+## Edge-Case Handling & Evidence Grounding
+
+StockSense AI implements deterministic safeguards and defensive evidence handling for all edge cases across retail analytics and natural language AI Copilot interactions:
+
+1. **Zero Recent Sales (`stock > 0`, `recent_7_units == 0`)**:
+   - `calculate_avg_daily_sales()` returns `None`.
+   - `calculate_days_remaining()` returns `None` (rendered as `"N/A"` in UI tables with zero-division protection).
+   - `classify_stockout_risk()` evaluates to `UNKNOWN`.
+   - Copilot payload includes canonical note: `"This product has recorded no recent sales, so a reliable stock-out estimate cannot be calculated."`
+
+2. **Zero Inventory (`current_stock == 0`)**:
+   - `calculate_days_remaining()` returns `0`.
+   - `classify_stockout_risk()` evaluates to `OUT_OF_STOCK`.
+   - `recommend_action()` returns `"Replenish immediately"`.
+   - Copilot payload includes canonical note: `"Product is out of stock across all selected stores."`
+
+3. **Unknown Product Fail-Closed (`"iPhone"`, `"Laptop"`)**:
+   - 5-Stage Entity Resolver evaluates exact matches, normalized matches, substring matches, and high-confidence typo fuzzy matches (`difflib.get_close_matches` with `cutoff >= 0.80`).
+   - Unrecognized items (such as `"iPhone"` or `"Laptop"`) fail closed to `status: "insufficient_data"`.
+   - Finding returns: `"Product 'iPhone' was not found in the retail database catalog."`
+   - Recommendation returns: `"No recommendation available"`.
+
+4. **Out-of-Domain Query Safeguard (`"Who won the cricket match?"`)**:
+   - Unrelated domain queries map to `status: "unsupported"`.
+   - Finding returns: `"This question is outside the scope of retail sales and inventory management."`
+   - Recommendation returns: `"No recommendation available"`.
+
+5. **Missing Schema Attribute (`"Who supplies Milk?"`)**:
+   - Schema attributes absent from the SQLite database (e.g. `supplier`) map to `status: "unsupported"`.
+   - Entity resolver identifies the recognized product (`"Milk 1L"`).
+   - Finding returns: `"Supplier information is not tracked in the current database schema."`
+   - Evidence payload contains `{"recognized_product": "Milk 1L", "missing_attribute": "supplier"}`.
+   - Recommendation returns: `"No recommendation available"`.
+
+6. **Gemini API Failure & Fallback Safeguards**:
+   - If `GEMINI_API_KEY` is unconfigured, invalid, or API calls fail, the Copilot automatically displays a fallback explanation banner without raising unhandled tracebacks.
+   - For `unsupported` or `insufficient_data` queries, LLM synthesis is skipped entirely to prevent world-knowledge hallucinations.
 
 ## Technology Stack
 - **Frontend / Dashboard**: Streamlit (Dark Theme)

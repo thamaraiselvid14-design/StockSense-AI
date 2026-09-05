@@ -786,19 +786,38 @@ def render_product_details_page():
 
     anom_status = anom["status"]
 
-    # Deterministic Recommendation
+    # Deterministic Recommendation & Edge-Case Note Banners
     rec_text = get_deterministic_product_recommendation(
         stock_risk, overstock, movement, anom_status, days_rem
     )
 
     st.markdown(
         f"""
-        <div style="background-color: #1E293B; border-left: 4px solid #38BDF8; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; color: #F8FAFC;">
+        <div style="background-color: #1E293B; border-left: 4px solid #38BDF8; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; color: #F8FAFC;">
             💡 <strong>Recommended Action:</strong> {rec_text}
         </div>
     """,
         unsafe_allow_html=True,
     )
+
+    if total_stock == 0:
+        st.markdown(
+            """
+            <div style="background-color: #451A03; border: 1px solid #78350F; border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; color: #FDE68A; font-size: 0.875rem;">
+                🔴 <strong>Stock Status:</strong> Product is currently out of stock.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif avg_daily is None and total_stock > 0:
+        st.markdown(
+            """
+            <div style="background-color: #111827; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; color: #94A3B8; font-size: 0.875rem;">
+                💡 <strong>Velocity Note:</strong> This product has recorded no recent sales, so a reliable stock-out estimate cannot be calculated.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # 10 Metric Cards in 2 rows
     c1, c2, c3, c4, c5 = st.columns(5)

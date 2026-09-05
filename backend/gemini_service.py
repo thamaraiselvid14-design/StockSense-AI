@@ -238,6 +238,11 @@ def generate_grounded_explanation(user_question: str, intent_data: dict, payload
     if not payload:
         return "No evidence data available to answer this query."
 
+    # For unsupported or insufficient data queries, skip LLM generation to prevent world-knowledge hallucination
+    p_status = payload.get("status") or payload.get("intent")
+    if p_status in ["unsupported", "insufficient_data"]:
+        return _generate_fallback_explanation(user_question, payload)
+
     if not is_gemini_available():
         return _generate_fallback_explanation(user_question, payload)
 

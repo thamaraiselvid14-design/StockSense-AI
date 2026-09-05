@@ -4,8 +4,10 @@ Routes natural-language intent data to deterministic backend engines and constru
 verified, evidence-backed payloads with canonical recommendations.
 """
 
+import difflib
 import os
 import sys
+import pandas as pd
 
 # Ensure backend directory is in sys.path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,39 +19,97 @@ from backend.database import (
     get_all_products_list,
     get_dashboard_kpis,
     get_latest_sales_date,
+    get_product_info,
     get_stores_list,
 )
-from backend.inventory_engine import get_inventory_report
+from backend.inventory_engine import (
+    calculate_avg_daily_sales,
+    calculate_days_remaining,
+    classify_stockout_risk,
+    get_inventory_report,
+)
+from backend.messages import (
+    MSG_MISSING_SUPPLIER_DATA,
+    MSG_NO_RECENT_SALES,
+    MSG_OUT_OF_DOMAIN,
+    MSG_ZERO_INVENTORY,
+    format_unknown_product_message,
+)
 from backend.recommendation_engine import recommend_action
 from backend.sales_engine import compare_stores, get_product_performance
 
 
 def resolve_product_id(product_query: str) -> str:
-    """Resolves a product search string or ID to a valid product_id in Products table, or None if unmapped."""
+    """Resolves a product search string or ID to a valid product_id in Products table using 5-stage resolver.
+
+    Stages:
+    1. Case-insensitive exact match in Products table
+    2. Normalized exact match (stripping punctuation/spaces)
+    3. Unique contains / substring match
+    4. High-confidence difflib typo match (cutoff >= 0.80)
+    5. Otherwise return None (fail closed)
+    """
     if not product_query:
         return None
 
-    pq = str(product_query).strip().lower()
-    if pq in ["null", "none", "all", "the product", "product", "a product", "this product", "any product"]:
+    pq = str(product_query).strip()
+    pq_lower = pq.lower()
+
+    if pq_lower in ["null", "none", "all", "the product", "product", "a product", "this product", "any product"]:
         return None
 
     products = get_all_products_list()
 
-    # Exact product_id match
+    # Stage 1: Case-insensitive exact match on product_id or product_name
     for p in products:
-        if p["product_id"].lower() == pq:
+        if p["product_id"].lower() == pq_lower or p["product_name"].lower() == pq_lower:
             return p["product_id"]
 
-    # Exact product_name match
+    # Stage 2: Normalized exact match (alphanumeric only)
+    norm_pq = "".join(c for c in pq_lower if c.isalnum())
     for p in products:
-        if p["product_name"].lower() == pq:
+        norm_name = "".join(c for c in p["product_name"].lower() if c.isalnum())
+        norm_id = "".join(c for c in p["product_id"].lower() if c.isalnum())
+        if norm_pq and (norm_pq == norm_name or norm_pq == norm_id):
             return p["product_id"]
 
-    # Substring match (e.g. "milk" -> "Milk 1L", "coffee" -> "Coffee 200g", "shampoo" -> "Shampoo 180ml")
+    # Stage 3: Unique contains / substring match
+    contains_matches = []
     for p in products:
-        if pq in p["product_name"].lower() or pq in p["product_id"].lower():
-            return p["product_id"]
+        p_name = p["product_name"].lower()
+        p_id = p["product_id"].lower()
+        if pq_lower in p_name or pq_lower in p_id or p_name.startswith(pq_lower):
+            contains_matches.append(p)
 
+    if len(contains_matches) == 1:
+        return contains_matches[0]["product_id"]
+    elif len(contains_matches) > 1:
+        # If multiple contain matches (e.g. "Pen"), pick match with exact word
+        for cm in contains_matches:
+            words = cm["product_name"].lower().split()
+            if pq_lower in words:
+                return cm["product_id"]
+        return contains_matches[0]["product_id"]
+
+    # Stage 4: High-confidence typo match using difflib (cutoff >= 0.80)
+    candidates = {}
+    for p in products:
+        p_name_lower = p["product_name"].lower()
+        candidates[p_name_lower] = p["product_id"]
+        first_word = p_name_lower.split()[0]
+        if first_word not in candidates:
+            candidates[first_word] = p["product_id"]
+
+    matches = difflib.get_close_matches(pq_lower, candidates.keys(), n=2, cutoff=0.80)
+    if len(matches) == 1:
+        return candidates[matches[0]]
+    elif len(matches) > 1:
+        ratio1 = difflib.SequenceMatcher(None, pq_lower, matches[0]).ratio()
+        ratio2 = difflib.SequenceMatcher(None, pq_lower, matches[1]).ratio()
+        if ratio1 >= 0.80 and (ratio1 - ratio2) >= 0.05:
+            return candidates[matches[0]]
+
+    # Stage 5: Fail closed -> No match
     return None
 
 
@@ -76,13 +136,42 @@ def route_query(intent_data: dict) -> dict:
     intent = intent_data.get("intent", "unsupported")
     prod_query = intent_data.get("product")
     store_query = intent_data.get("store")
+    unsupported_attr = intent_data.get("unsupported_attribute")
 
     store_id = resolve_store_id(store_query)
 
-    # Unsupported intent -> No recommendation available
+    # Edge Case 5: Missing Schema Attribute (e.g. Supplier of Milk)
+    if unsupported_attr == "supplier" or (intent == "unsupported" and prod_query and any(w in str(prod_query).lower() for w in ["supplier", "vendor"])):
+        resolved_pid = resolve_product_id(prod_query) if prod_query else None
+        p_info = get_product_info(resolved_pid) if resolved_pid else None
+        prod_display = p_info["product_name"] if p_info else (prod_query or "Product")
+
+        f_text = MSG_MISSING_SUPPLIER_DATA
+        a_text = "The current schema contains retail sales, products, stores, and inventory data but no supplier pricing information."
+        ev_dict = {
+            "recognized_product": prod_display,
+            "missing_attribute": "supplier",
+            "count": 0,
+            "details": [],
+        }
+
+        return {
+            "status": "unsupported",
+            "intent": "unsupported",
+            "finding": f_text,
+            "summary": f_text,
+            "recommendation": "No recommendation available",
+            "recommended_action": "No recommendation available",
+            "assumption": a_text,
+            "assumptions": a_text,
+            "evidence": ev_dict,
+            "details": [],
+        }
+
+    # Edge Case 4: Completely Out-of-Domain Question (e.g. Cricket)
     if intent == "unsupported":
-        f_text = "Supplier, vendor, cost margin, or non-retail operational questions are not tracked in the current database."
-        a_text = "Database contains retail sales transactions and store inventory levels only; supplier logistics data is unavailable."
+        f_text = MSG_OUT_OF_DOMAIN
+        a_text = "Only retail sales, inventory stock levels, and store performance are supported."
         return {
             "status": "unsupported",
             "intent": "unsupported",
@@ -96,9 +185,13 @@ def route_query(intent_data: dict) -> dict:
             "details": [],
         }
 
-    # Insufficient data intent -> No recommendation available
+    # Edge Case 3: Unknown Product (e.g. "iPhone") or Insufficient Data
     if intent == "insufficient_data":
-        f_text = f"Product '{prod_query}' was not found in the retail database catalog." if prod_query else "Product name was missing or unspecified in your question."
+        target_pid = resolve_product_id(prod_query) if prod_query else None
+        if prod_query and not target_pid:
+            f_text = format_unknown_product_message(prod_query)
+        else:
+            f_text = "Product name was missing or unspecified in your question."
         a_text = "Query requires a valid product name from the 30-item catalog."
         return {
             "status": "insufficient_data",
@@ -120,6 +213,20 @@ def route_query(intent_data: dict) -> dict:
             target_pid = resolve_product_id(prod_query)
             if target_pid:
                 report_df = report_df[report_df["product_id"] == target_pid]
+            else:
+                f_text = format_unknown_product_message(prod_query)
+                return {
+                    "status": "insufficient_data",
+                    "intent": "insufficient_data",
+                    "finding": f_text,
+                    "summary": f_text,
+                    "recommendation": "No recommendation available",
+                    "recommended_action": "No recommendation available",
+                    "assumption": "Query requires a valid product name from catalog.",
+                    "assumptions": "Query requires a valid product name from catalog.",
+                    "evidence": {"count": 0, "details": []},
+                    "details": [],
+                }
 
         risk_df = report_df[report_df["stockout_risk"].isin(["OUT_OF_STOCK", "CRITICAL", "HIGH"])]
 
@@ -133,6 +240,7 @@ def route_query(intent_data: dict) -> dict:
                 "current_stock": int(r["current_stock"]),
                 "days_remaining": round(days_rem, 1) if days_rem is not None else None,
                 "stockout_risk": r["stockout_risk"],
+                "note": MSG_ZERO_INVENTORY if int(r["current_stock"]) == 0 else None,
             })
 
         worst_risk = "SAFE"
@@ -168,6 +276,20 @@ def route_query(intent_data: dict) -> dict:
             target_pid = resolve_product_id(prod_query)
             if target_pid:
                 report_df = report_df[report_df["product_id"] == target_pid]
+            else:
+                f_text = format_unknown_product_message(prod_query)
+                return {
+                    "status": "insufficient_data",
+                    "intent": "insufficient_data",
+                    "finding": f_text,
+                    "summary": f_text,
+                    "recommendation": "No recommendation available",
+                    "recommended_action": "No recommendation available",
+                    "assumption": "Query requires a valid product name from catalog.",
+                    "assumptions": "Query requires a valid product name from catalog.",
+                    "evidence": {"count": 0, "details": []},
+                    "details": [],
+                }
 
         overstock_df = report_df[report_df["overstock_flag"] == "OVERSTOCK_RISK"]
 
@@ -208,6 +330,20 @@ def route_query(intent_data: dict) -> dict:
             target_pid = resolve_product_id(prod_query)
             if target_pid:
                 report_df = report_df[report_df["product_id"] == target_pid]
+            else:
+                f_text = format_unknown_product_message(prod_query)
+                return {
+                    "status": "insufficient_data",
+                    "intent": "insufficient_data",
+                    "finding": f_text,
+                    "summary": f_text,
+                    "recommendation": "No recommendation available",
+                    "recommended_action": "No recommendation available",
+                    "assumption": "Query requires a valid product name from catalog.",
+                    "assumptions": "Query requires a valid product name from catalog.",
+                    "evidence": {"count": 0, "details": []},
+                    "details": [],
+                }
 
         slow_df = report_df[report_df["movement_status"].isin(["SLOW_MOVING", "NON_MOVING"])]
 
@@ -219,6 +355,7 @@ def route_query(intent_data: dict) -> dict:
                 "store": r["store"],
                 "current_stock": int(r["current_stock"]),
                 "movement_status": r["movement_status"],
+                "note": MSG_NO_RECENT_SALES if r["avg_daily_sales"] is None else None,
             })
 
         worst_movement = "NON_MOVING" if any(i["movement_status"] == "NON_MOVING" for i in items) else ("SLOW_MOVING" if items else "NORMAL")
@@ -245,7 +382,7 @@ def route_query(intent_data: dict) -> dict:
         if prod_query:
             target_pid = resolve_product_id(prod_query)
             if not target_pid:
-                f_text = f"Product '{prod_query}' was not found in the retail database catalog."
+                f_text = format_unknown_product_message(prod_query)
                 a_text = "Sales anomaly check requires a valid product name from catalog."
                 return {
                     "status": "insufficient_data",
@@ -342,7 +479,7 @@ def route_query(intent_data: dict) -> dict:
 
         target_pid = resolve_product_id(prod_query)
         if not target_pid:
-            f_text = f"Product '{prod_query}' was not found in the retail database catalog."
+            f_text = format_unknown_product_message(prod_query)
             a_text = "Product performance analysis requires a valid product from the 30-item catalog."
             return {
                 "status": "insufficient_data",
@@ -360,12 +497,13 @@ def route_query(intent_data: dict) -> dict:
         perf = get_product_performance(target_pid, period_days=30)
         anom = detect_sales_spike_or_drop(target_pid)
 
-        inv_df = get_inventory_report()
+        inv_df = get_inventory_report(store_id=store_id)
         p_inv = inv_df[inv_df["product_id"] == target_pid]
 
         if not p_inv.empty:
-            days_rem = p_inv["days_remaining"].min()
-            stock_risk = p_inv["stockout_risk"].iloc[0]
+            avg_daily = calculate_avg_daily_sales(target_pid, store_id=store_id)
+            days_rem = calculate_days_remaining(p_inv["current_stock"].sum(), avg_daily)
+            stock_risk = classify_stockout_risk(days_rem)
             overstock = p_inv["overstock_flag"].iloc[0]
             movement = p_inv["movement_status"].iloc[0]
         else:
@@ -373,6 +511,7 @@ def route_query(intent_data: dict) -> dict:
             stock_risk = "SAFE"
             overstock = "NORMAL"
             movement = "NORMAL"
+            avg_daily = None
 
         # Pass retrieved signals through canonical recommend_action
         rec = recommend_action({
@@ -387,7 +526,13 @@ def route_query(intent_data: dict) -> dict:
         best_store_name = perf["best_performing_store"]["store_name"] if perf.get("best_performing_store") else "N/A"
         growth_pct = round(perf["growth_percent"], 1) if perf.get("growth_percent") is not None else None
 
+        is_no_sales = pd.isna(avg_daily) or avg_daily is None
         f_text = f"30-day performance overview for {perf.get('product_name')}."
+        if is_no_sales and perf.get("current_stock", 0) > 0:
+            f_text += f" {MSG_NO_RECENT_SALES}"
+        elif perf.get("current_stock", 0) == 0:
+            f_text += f" {MSG_ZERO_INVENTORY}"
+
         a_text = "Metrics calculated over the latest 30-day period compared to prior 30 days."
 
         detail_items = [
@@ -404,6 +549,7 @@ def route_query(intent_data: dict) -> dict:
                 "days_remaining": round(days_rem, 1) if days_rem is not None else None,
                 "stockout_risk": stock_risk,
                 "anomaly_status": anom.get("status"),
+                "note": MSG_NO_RECENT_SALES if is_no_sales else (MSG_ZERO_INVENTORY if perf.get("current_stock", 0) == 0 else None),
             }
         ]
 
@@ -440,7 +586,7 @@ def route_query(intent_data: dict) -> dict:
 
         target_pid = resolve_product_id(prod_query)
         if not target_pid:
-            f_text = f"Product '{prod_query}' was not found in the retail database catalog."
+            f_text = format_unknown_product_message(prod_query)
             a_text = "Store comparison requires a valid product from the 30-item catalog."
             return {
                 "status": "insufficient_data",
@@ -540,7 +686,7 @@ def route_query(intent_data: dict) -> dict:
 
     # Fallback -> No recommendation available
     else:
-        f_text = "The requested query falls outside supported deterministic retail analytics domains."
+        f_text = MSG_OUT_OF_DOMAIN
         a_text = "Only retail sales, inventory stock levels, and store performance are supported."
         return {
             "status": "unsupported",
